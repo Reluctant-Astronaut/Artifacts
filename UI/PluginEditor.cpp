@@ -1042,7 +1042,7 @@ void KintsugiLookAndFeel::drawCreamKnob (juce::Graphics& g, int x, int y, int w,
     auto heptPath = [&] (float r)
     {
         Path p;
-        constexpr int n = sides * 16;
+        const int n = sides * 16;   // (const, not constexpr: MSVC will not read a captured constant at compile time)
         for (int i = 0; i <= n; ++i)
         {
             const float a = (float) i / n * MathConstants<float>::twoPi;
@@ -1089,7 +1089,7 @@ void KintsugiLookAndFeel::drawCreamKnob (juce::Graphics& g, int x, int y, int w,
     g.setColour (Colours::black.withAlpha (0.30f));
     g.fillPath (heptPath (Ro), AffineTransform::translation (0.8f, 1.6f));
     {
-        constexpr int n = sides * 16;
+        const int n = sides * 16;
         for (int i = 0; i < n; ++i)
         {
             const float a0 = (float) i / n * MathConstants<float>::twoPi;
