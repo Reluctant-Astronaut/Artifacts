@@ -164,7 +164,7 @@ static Layout ipadFull()
     // transport and modes
     const float tw = 610.0f, mw = full - tw - gap;
     bracket ("Transport", x0, tw, 142.0f); bracket ("Mode & Mix", x0 + tw + gap, mw, 142.0f);
-    addRow (L, { "rew", "ffw", "stop", "play", "rec" }, x0, 176.0f, tw, 140.0f, 14.0f, true);
+    addRow (L, { "start", "rew", "ffw", "stop", "play", "rec" }, x0, 176.0f, tw, 140.0f, 14.0f, true);
     addRow (L, { "cycle", "mixer" }, x0 + tw + gap, 176.0f, mw, 140.0f, 14.0f, true);
     lampAbove (L, "play", "green", 163.0f); lampAbove (L, "rec", "red", 163.0f);
     lampAbove (L, "cycle", "amber", 163.0f);
@@ -174,7 +174,7 @@ static Layout ipadFull()
     // locate and edit
     const float lw = 530.0f, ew = full - lw - gap;
     bracket ("Locate", x0, lw, 482.0f); bracket ("Edit", x0 + lw + gap, ew, 482.0f);
-    addRow (L, { "start", "prev", "next", "add", "click" }, x0, 504.0f, lw, 80.0f, 12.0f, true);
+    addRow (L, { "prev", "next", "add", "click" }, x0, 504.0f, lw, 80.0f, 12.0f, true);
     addRow (L, { "undo", "redo", "save", "newver" }, x0 + lw + gap, 504.0f, ew, 80.0f, 12.0f, false);
     // windows
     bracket ("Windows", x0, full, 614.0f);
