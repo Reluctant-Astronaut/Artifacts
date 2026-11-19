@@ -1,0 +1,119 @@
+name: Build Artifacts
+
+on: [push, workflow_dispatch]
+
+jobs:
+  mac:
+    runs-on: macos-15
+    permissions:
+      contents: write   # to publish the "latest-build" release the Artifacts Button installs from
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Configure (Apple Silicon and Intel in one binary)
+        run: cmake -B build -G Xcode -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
+
+      - name: Build all five plugins, VST3 and Audio Unit
+        run: |
+          for t in Console Kintsugi Duality Anemoia Equanimity; do
+            cmake --build build --config Release --target ${t}_VST3 -- -quiet
+            cmake --build build --config Release --target ${t}_AU -- -quiet
+          done
+
+      - name: Sign the plugins (ad-hoc, so Apple Silicon Macs will load them)
+        run: |
+          for t in Console Kintsugi Duality Anemoia Equanimity; do
+            cd build/${t}_artefacts/Release
+            for b in VST3/*.vst3 AU/*.component; do
+              codesign --force --deep --sign - "$b"
+              codesign --verify --deep --verbose "$b"
+            done
+            cd "$GITHUB_WORKSPACE"
+          done
+
+      - name: Package the plugins on their own
+        run: |
+          mkdir -p out/vst3 out/au
+          for t in Console Kintsugi Duality Anemoia Equanimity; do
+            cp -R build/${t}_artefacts/Release/VST3/*.vst3 out/vst3/
+            cp -R build/${t}_artefacts/Release/AU/*.component out/au/
+          done
+          (cd out && ditto -c -k --keepParent vst3 Artifacts-VST3.zip && ditto -c -k --keepParent au Artifacts-AU.zip)
+          printf 'commit %s\n%s\n' "$(git rev-parse --short HEAD)" "$(date -u '+%Y-%m-%d %H:%M UTC')" > out/build-info.txt
+
+      - name: Build the Artifacts Button (the red one-press installer app)
+        env:
+          ARTIFACTS_REPO: ${{ github.repository }}
+        run: |
+          bash tools/ArtifactsButton/build-app.sh out
+          (cd out && ditto -c -k --keepParent "Artifacts Button.app" Artifacts-Button.zip)
+
+      - name: Build the Mac installer
+        run: |
+          set -e
+          VERSION=1.0.0
+          mkdir -p pkgroot/vst3/Library/Audio/Plug-Ins/VST3 pkgroot/au/Library/Audio/Plug-Ins/Components
+          cp -R out/vst3/*.vst3 pkgroot/vst3/Library/Audio/Plug-Ins/VST3/
+          cp -R out/au/*.component pkgroot/au/Library/Audio/Plug-Ins/Components/
+
+          # always install to the standard plug-in folders, even if an old copy sits elsewhere
+          for c in vst3 au; do
+            pkgbuild --analyze --root pkgroot/$c $c.plist
+            plutil -replace BundleIsRelocatable -bool NO $c.plist
+          done
+          pkgbuild --root pkgroot/vst3 --component-plist vst3.plist --install-location / \
+                   --identifier com.reluctantastronaut.artifacts.vst3 --version $VERSION Artifacts-VST3.pkg
+          pkgbuild --root pkgroot/au --component-plist au.plist --install-location / \
+                   --identifier com.reluctantastronaut.artifacts.au --version $VERSION Artifacts-AU.pkg
+          productbuild --distribution installer/distribution.xml --resources installer/resources \
+                       --package-path . installer-out.pkg
+
+          mkdir -p "share/Artifacts Installer"
+          mv installer-out.pkg "share/Artifacts Installer/Artifacts.pkg"
+          cp "installer/Read Me First.txt" "share/Artifacts Installer/"
+          cd share && ditto -c -k --keepParent "Artifacts Installer" "$GITHUB_WORKSPACE/out/Artifacts-Mac-Installer.zip"
+
+      - name: Validate the VST3s with pluginval
+        run: |
+          curl -L -o pv.zip https://github.com/Tracktion/pluginval/releases/latest/download/pluginval_macOS.zip
+          unzip -q pv.zip
+          for f in out/vst3/*.vst3; do
+            pluginval.app/Contents/MacOS/pluginval --strictness-level 10 --validate-in-process --skip-gui-tests "$f"
+          done
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: Artifacts-Mac-Installer
+          path: out/Artifacts-Mac-Installer.zip
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: Artifacts-plugins
+          path: |
+            out/Artifacts-VST3.zip
+            out/Artifacts-AU.zip
+
+      - name: Publish the latest build (what the Artifacts Button installs)
+        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete latest-build --yes --cleanup-tag || true
+          gh release create latest-build --target "$GITHUB_SHA" --title "Artifacts - latest build" \
+            --notes "Built from $(git rev-parse --short HEAD). Press the Artifacts Button to install it, or use Artifacts-Mac-Installer.zip." \
+            out/Artifacts-VST3.zip out/Artifacts-AU.zip out/build-info.txt out/Artifacts-Mac-Installer.zip out/Artifacts-Button.zip
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: cmake -B build -A x64
+      - run: cmake --build build --config Release --target Console_VST3 Kintsugi_VST3 Duality_VST3 Anemoia_VST3 Equanimity_VST3
+      - run: |
+          mkdir out
+          Get-ChildItem build -Recurse -Filter *.vst3 -Directory | ForEach-Object { Copy-Item $_.FullName out -Recurse }
+          Compress-Archive out/* Artifacts-Windows-VST3.zip
+      - uses: actions/upload-artifact@v6
+        with:
+          name: Artifacts-Windows-VST3
+          path: Artifacts-Windows-VST3.zip

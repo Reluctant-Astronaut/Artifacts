@@ -1,0 +1,29 @@
+ARTIFACTS
+a Reluctant Astronaut plugin suite: Console RA-1, Kintsugi, Duality, Anemoia, Equanimity
+
+HOW TO INSTALL (Mac)
+
+1. Double-click "Artifacts.pkg".
+
+2. macOS will probably say it "cannot verify" the installer or that it's from an
+   "unidentified developer". That's only because it is made by a friend, not by a
+   company that pays Apple to sign its software. To open it anyway:
+     - Click "Done" to close the message.
+     - Open System Settings > Privacy & Security.
+     - Scroll down to the line about "Artifacts.pkg" and click "Open Anyway",
+       then confirm with your password.
+   (On older macOS: right-click Artifacts.pkg, choose Open, and click Open again.)
+
+3. Follow the installer: Continue, Install, and your Mac password.
+   It installs VST3 (Cubase, Ableton Live, Reaper, Studio One...) and
+   Audio Unit (Logic Pro, GarageBand).
+
+4. Open your music program and rescan:
+     - Cubase: Studio > VST Plug-in Manager > Rescan.
+     - Logic / GarageBand: found automatically.
+
+TO UNINSTALL
+
+Delete these (Finder > Go > Go to Folder... and paste the path):
+  /Library/Audio/Plug-Ins/VST3/   Console RA-1.vst3, Kintsugi.vst3, Duality.vst3, Anemoia.vst3, Equanimity.vst3
+  /Library/Audio/Plug-Ins/Components/   the same four, ending in .component

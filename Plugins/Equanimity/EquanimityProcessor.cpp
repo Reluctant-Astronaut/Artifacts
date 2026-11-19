@@ -1,0 +1,312 @@
+#include "EquanimityProcessor.h"
+#include "PluginEditor.h"
+#include <string>
+
+using namespace juce;
+
+AudioProcessorValueTreeState::ParameterLayout EquanimityProcessor::createLayout()
+{
+    std::vector<std::unique_ptr<RangedAudioParameter>> p;
+
+    auto dial = [&] (const char* id, const char* name, float def)   // the 0 - 10 dials of the original
+    {
+        p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { id, 1 }, name, NormalisableRange<float> (0.0f, 10.0f, 0.01f), def,
+            AudioParameterFloatAttributes().withStringFromValueFunction ([] (float v, int) { return String (v, 1); })));
+    };
+    auto choice = [&] (const char* id, const char* name, StringArray items, int def, bool automatable = true)
+    {
+        p.push_back (std::make_unique<AudioParameterChoice> (ParameterID { id, 1 }, name, items, def,
+                                                             AudioParameterChoiceAttributes().withAutomatable (automatable)));
+    };
+
+    // Three banks of the same controls: Stereo (left / right), Mid and Side. All three are heard at once;
+    // the Path keys choose the mode and which bank the panel shows.
+    for (int bank = 0; bank < 3; ++bank)
+    {
+        const std::string pre = bank == 0 ? "" : bank == 1 ? "m_" : "s_";
+        const String nm = bank == 0 ? "" : bank == 1 ? "Mid " : "Side ";
+        auto id = [&] (const char* base) { return pre + base; };
+        auto idc = [&] (const char* base) { return ParameterID { id (base), 1 }; };
+        auto dial2 = [&] (const char* base, const char* name, float def)
+        {
+            p.push_back (std::make_unique<AudioParameterFloat> (idc (base), nm + name, NormalisableRange<float> (0.0f, 10.0f, 0.01f), def,
+                AudioParameterFloatAttributes().withStringFromValueFunction ([] (float v, int) { return String (v, 1); })));
+        };
+        auto choice2 = [&] (const char* base, const char* name, StringArray items, int def)
+        {
+            p.push_back (std::make_unique<AudioParameterChoice> (idc (base), nm + name, items, def));
+        };
+        // Low
+        choice2 ("lofreq", "Low Frequency", { "20 Hz", "30 Hz", "60 Hz", "100 Hz" }, 2);
+        dial2 ("loboost", "Low Boost", 0.0f);
+        dial2 ("loatten", "Low Atten", 0.0f);
+        // High
+        choice2 ("hifreq", "High Frequency", { "3 kHz", "4 kHz", "5 kHz", "6 kHz", "8 kHz", "10 kHz", "12 kHz", "16 kHz" }, 4);
+        dial2 ("bw", "Bandwidth", 5.0f);
+        dial2 ("hiboost", "High Boost", 0.0f);
+        // High atten
+        choice2 ("attensel", "Atten Sel", { "5 kHz", "10 kHz", "20 kHz" }, 1);
+        dial2 ("hiatten", "High Atten", 0.0f);
+        // Midrange (MEQ-5): low peak, dip, high peak
+        choice2 ("mlfreq", "Mid Low Frequency", { "200 Hz", "300 Hz", "500 Hz", "700 Hz", "1 kHz" }, 2);
+        dial2 ("mlpeak", "Mid Low Peak", 0.0f);
+        choice2 ("mdfreq", "Mid Dip Frequency", { "200 Hz", "300 Hz", "500 Hz", "700 Hz", "1 kHz", "1.5 kHz", "2 kHz", "3 kHz", "4 kHz", "5 kHz" }, 4);
+        dial2 ("mdip", "Mid Dip", 0.0f);
+        choice2 ("mhfreq", "Mid High Frequency", { "1.5 kHz", "2 kHz", "3 kHz", "4 kHz", "5 kHz" }, 2);
+        dial2 ("mhpeak", "Mid High Peak", 0.0f);
+    }
+    // Switches
+    choice ("eqin", "EQ In", { "Out", "In" }, 1);
+    choice ("msmode", "Path", { "L/R", "M/S" }, 0);                       // the whole EQ in left / right or in mid / side
+    choice ("msedit", "Path Edit", { "Mid", "Link", "Side" }, 0, false);   // in M/S: which channel the panel edits (Link = both)
+    choice ("autogain", "Auto Gain", { "Out", "In" }, 0);                     // keeps the level steady as the EQ changes
+    choice ("solo", "Solo", { "Out", "In" }, 0);                                  // listen to the Mid or the Side alone
+    // Output
+    p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "output", 1 }, "Output", NormalisableRange<float> (-24.0f, 12.0f, 0.1f), 0.0f,
+        AudioParameterFloatAttributes().withLabel ("dB").withStringFromValueFunction ([] (float v, int) { return String (v, 1) + " dB"; })));
+    return { p.begin(), p.end() };
+}
+
+
+// Triode curve, slope 1 at the origin. k sets how hard the signal drives it, b how lopsided (even harmonics) it sits.
+static inline float triode (float x, float k, float b)
+{
+    const float t0 = analog::fastTanh (b), slope = 1.0f - t0 * t0;
+    return (analog::fastTanh (k * x + b) - t0) / (k * slope);
+}
+static inline float satLow (float l) { return analog::fastTanh (0.6f * l) / 0.6f; }
+
+EquanimityProcessor::EquanimityProcessor()
+    : ArtifactsProcessor (BusesProperties()
+                            .withInput  ("Input",  AudioChannelSet::stereo(), true)
+                            .withOutput ("Output", AudioChannelSet::stereo(), true),
+                          createLayout(), "Equanimity")
+{
+    pOutput = apvts.getRawParameterValue ("output");
+    pEqIn = apvts.getRawParameterValue ("eqin");
+    pMode = apvts.getRawParameterValue ("msmode");
+    pEdit = apvts.getRawParameterValue ("msedit");
+    pSolo = apvts.getRawParameterValue ("solo");
+    static const char* base[14] { "lofreq", "loboost", "loatten", "hifreq", "bw", "hiboost", "attensel", "hiatten", "mlfreq", "mlpeak", "mdfreq", "mdip", "mhfreq", "mhpeak" };
+    pAuto = apvts.getRawParameterValue ("autogain");
+    static const char* pre[3] { "", "m_", "s_" };
+    for (int b = 0; b < 3; ++b)
+        for (int k = 0; k < 14; ++k)
+            pBank[b][k] = apvts.getRawParameterValue (String (pre[b]) + base[k]);
+}
+
+bool EquanimityProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
+{
+    const auto out = layouts.getMainOutputChannelSet(), in = layouts.getMainInputChannelSet();
+    return out == AudioChannelSet::stereo() && (in == AudioChannelSet::stereo() || in == AudioChannelSet::mono());
+}
+
+double EquanimityProcessor::loFreqHz (int i)  { static const double f[] { 20, 30, 60, 100 }; return f[jlimit (0, 3, i)]; }
+double EquanimityProcessor::hiFreqHz (int i)  { static const double f[] { 3000, 4000, 5000, 6000, 8000, 10000, 12000, 16000 }; return f[jlimit (0, 7, i)]; }
+double EquanimityProcessor::mLoHz (int i)  { static const double f[] { 200, 300, 500, 700, 1000 }; return f[jlimit (0, 4, i)]; }
+double EquanimityProcessor::mDipHz (int i) { static const double f[] { 200, 300, 500, 700, 1000, 1500, 2000, 3000, 4000, 5000 }; return f[jlimit (0, 9, i)]; }
+double EquanimityProcessor::mHiHz (int i)  { static const double f[] { 1500, 2000, 3000, 4000, 5000 }; return f[jlimit (0, 4, i)]; }
+double EquanimityProcessor::attSelHz (int i)  { static const double f[] { 5000, 10000, 20000 }; return f[jlimit (0, 2, i)]; }
+
+
+// The EQP-1A numbers: low boost 0 - 13.5 dB, low atten 0 - 17.5 dB, high boost 0 - 18 dB, high atten 0 - 16 dB.
+// In the hardware boost and atten share one passive network: the boost shelf has a little resonant lift, the atten shelf turns over
+// higher and more gently, so the two together (same frequency) give more low end with a dip above it: the Pultec trick.
+void EquanimityProcessor::designEq (EqChannel& e, const Settings& s) const
+{
+    const double nyq = 0.45 * sr;
+    auto shelfLow = [&] (Biquad& b, double f, double dB, double Q)
+    {
+        const double A = std::pow (10.0, dB / 40.0), w = MathConstants<double>::twoPi * jmin (f, nyq) / sr, cs = std::cos (w), al = std::sin (w) / (2 * Q), r = 2 * std::sqrt (A) * al;
+        b.set (A * ((A + 1) - (A - 1) * cs + r), 2 * A * ((A - 1) - (A + 1) * cs), A * ((A + 1) - (A - 1) * cs - r),
+               (A + 1) + (A - 1) * cs + r, -2 * ((A - 1) + (A + 1) * cs), (A + 1) + (A - 1) * cs - r);
+    };
+    auto shelfHigh = [&] (Biquad& b, double f, double dB, double Q)
+    {
+        const double A = std::pow (10.0, dB / 40.0), w = MathConstants<double>::twoPi * jmin (f, nyq) / sr, cs = std::cos (w), al = std::sin (w) / (2 * Q), r = 2 * std::sqrt (A) * al;
+        b.set (A * ((A + 1) + (A - 1) * cs + r), -2 * A * ((A - 1) + (A + 1) * cs), A * ((A + 1) + (A - 1) * cs - r),
+               (A + 1) - (A - 1) * cs + r, 2 * ((A - 1) - (A + 1) * cs), (A + 1) - (A - 1) * cs - r);
+    };
+    auto peak = [&] (Biquad& b, double f, double dB, double Q)
+    {
+        const double A = std::pow (10.0, dB / 40.0), w = MathConstants<double>::twoPi * jmin (f, nyq) / sr, cs = std::cos (w), al = std::sin (w) / (2 * Q);
+        b.set (1 + al * A, -2 * cs, 1 - al * A, 1 + al / A, -2 * cs, 1 - al / A);
+    };
+    const double fl = loFreqHz (s.loFreq);
+    shelfLow (e.loBoost, fl, 11.6 * s.loBoost / 10.0, 1.5);                // resonant lift, and a dip just above it
+    shelfLow (e.loAtten, fl * 1.8, -19.2 * (s.loAtten / 10.0) * (1.0 - 0.25 * s.loBoost / 10.0), 0.45);   // turns over higher and gentler; the network gives a little as the boost comes up
+    // bandwidth: sharp (0) is a narrow peak, broad (10) a wide one; the real unit's peak also eases off a little when sharp
+    const double q = 4.0 * std::pow (0.14, s.bw / 10.0);                   // 4.0 ... 0.56
+    peak (e.hiPeak, hiFreqHz (s.hiFreq), 18.0 * s.hiBoost / 10.0, q);
+    // MEQ-5 midrange: broad peaks (up to +10 dB) either side of a dip (up to -10 dB)
+    peak (e.mLo,  mLoHz (s.mLoFreq),   10.0 * s.mLoPk / 10.0,  0.70);
+    peak (e.mDip, mDipHz (s.mDipFreq), -10.0 * s.mDip / 10.0,  0.85);
+    peak (e.mHi,  mHiHz (s.mHiFreq),   10.0 * s.mHiPk / 10.0,  0.80);
+    shelfHigh (e.hiAtten, attSelHz (s.attSel), -16.0 * s.hiAtten / 10.0, 0.6);
+}
+
+// How much the EQ changes the overall level, as heard: the mean power gain over 20 Hz - 20 kHz, equal weight per octave (what pink noise or music would add up to).
+// Auto gain applies the opposite, so tonal changes can be judged without the level jumping.
+double EquanimityProcessor::loudnessComp (const EqChannel& e) const
+{
+    constexpr int N = 40;
+    double acc = 0;
+    for (int i = 0; i < N; ++i)
+    {
+        const double f = 20.0 * std::pow (20000.0 / 20.0, (double) i / (N - 1)), w = MathConstants<double>::twoPi * f / sr;
+        const double p = e.loBoost.mag2 (w) * e.loAtten.mag2 (w) * e.mLo.mag2 (w) * e.mDip.mag2 (w) * e.mHi.mag2 (w) * e.hiPeak.mag2 (w) * e.hiAtten.mag2 (w);
+        acc += p;
+    }
+    return std::pow (10.0, jlimit (-12.0, 12.0, -10.0 * std::log10 (std::max (acc / N, 1.0e-12))) / 20.0);
+}
+
+void EquanimityProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
+{
+    sr = sampleRate;
+    maxBlock = jmax (32, samplesPerBlock);
+    oversampling.reset();
+    oversampling.initProcessing ((size_t) maxBlock);
+    setLatencySamples ((int) std::ceil (oversampling.getLatencyInSamples()));
+    sOut.reset (sampleRate, 0.03);
+    sOut.setCurrentAndTargetValue (Decibels::decibelsToGain (pOutput->load()));
+    for (auto& v : valve) v = {};
+    for (auto& e : eq) { e.loBoost.clear(); e.loAtten.clear(); e.mLo.clear(); e.mDip.clear(); e.mHi.clear(); e.hiPeak.clear(); e.hiAtten.clear(); e.autoGain = 1.0; }
+    heat = 0.0f;
+    // start from the current settings, no glide
+    for (int c = 0; c < 2; ++c) { cur[c] = tgt[c]; designEq (eq[c], cur[c]); }
+}
+
+void EquanimityProcessor::processBlock (AudioBuffer<float>& buffer, MidiBuffer&)
+{
+    ScopedNoDenormals noDenormals;
+    const int n = buffer.getNumSamples();
+    if (buffer.getNumChannels() < 2) return;
+    if (getTotalNumInputChannels() == 1) buffer.copyFrom (1, 0, buffer, 0, 0, n);   // a mono source feeds both sides
+
+    // ---- which banks the two EQ channels use, and the dial settings (as the original: 0 - 10, stepped selectors)
+    const bool ms = pMode->load() > 0.5f;
+    const int edit = (int) pEdit->load();   // 0 Mid, 1 Link, 2 Side
+    const bool eqIn = pEqIn->load() > 0.5f;
+    const int bankA = ms ? 1 : 0, bankB = ms ? 2 : 0;   // channel 0 (L or Mid), channel 1 (R or Side)
+    const bool autoOn = pAuto->load() > 0.5f && pEqIn->load() > 0.5f;
+    const bool solo = ms && pSolo->load() > 0.5f && edit != 1;
+    const bool soloSide = edit == 2;
+
+    auto load = [&] (int bank, Settings& s)
+    {
+        auto* p = pBank[bank];
+        s.loFreq = (int) p[0]->load(); s.loBoost = p[1]->load(); s.loAtten = p[2]->load();
+        s.hiFreq = (int) p[3]->load(); s.bw = p[4]->load(); s.hiBoost = p[5]->load();
+        s.attSel = (int) p[6]->load(); s.hiAtten = p[7]->load();
+        s.mLoFreq = (int) p[8]->load(); s.mLoPk = p[9]->load(); s.mDipFreq = (int) p[10]->load(); s.mDip = p[11]->load();
+        s.mHiFreq = (int) p[12]->load(); s.mHiPk = p[13]->load();
+    };
+    load (bankA, tgt[0]);
+    load (bankB, tgt[1]);
+
+    float peak = 0.0f, ins[2] { 0.0f, 0.0f };
+    const float glide = 1.0f - std::exp (-32.0f / (0.02f * (float) sr));
+    auto* L = buffer.getWritePointer (0);
+    auto* R = buffer.getWritePointer (1);
+
+    for (int start = 0; start < n; start += 32)
+    {
+        const int len = jmin (32, n - start);
+        // dials glide, stepped selectors jump (as the switches do)
+        for (int c = 0; c < 2; ++c)
+        {
+            auto& cs = cur[c]; const auto& t = tgt[c];
+            cs.loBoost += (t.loBoost - cs.loBoost) * glide; cs.loAtten += (t.loAtten - cs.loAtten) * glide;
+            cs.hiBoost += (t.hiBoost - cs.hiBoost) * glide; cs.bw += (t.bw - cs.bw) * glide; cs.hiAtten += (t.hiAtten - cs.hiAtten) * glide;
+            cs.mLoPk += (t.mLoPk - cs.mLoPk) * glide; cs.mDip += (t.mDip - cs.mDip) * glide; cs.mHiPk += (t.mHiPk - cs.mHiPk) * glide;
+            cs.mLoFreq = t.mLoFreq; cs.mDipFreq = t.mDipFreq; cs.mHiFreq = t.mHiFreq;
+            cs.loFreq = t.loFreq; cs.hiFreq = t.hiFreq; cs.attSel = t.attSel;
+            designEq (eq[c], cs);
+            const double target = autoOn ? loudnessComp (eq[c]) : 1.0;
+            eq[c].autoGain += (target - eq[c].autoGain) * 0.25;   // the level follows the dials, not the other way round
+        }
+        for (int i = start; i < start + len; ++i)
+        {
+            ins[0] += L[i] * L[i]; ins[1] += R[i] * R[i];
+            double a = L[i], b = R[i];
+            if (ms) { const double m = 0.5 * (a + b), s = 0.5 * (a - b); a = m; b = s; }
+            if (eqIn)
+            {
+                a = eq[0].hiAtten.tick (eq[0].hiPeak.tick (eq[0].mHi.tick (eq[0].mDip.tick (eq[0].mLo.tick (eq[0].loAtten.tick (eq[0].loBoost.tick (a))))))) * eq[0].autoGain;
+                b = eq[1].hiAtten.tick (eq[1].hiPeak.tick (eq[1].mHi.tick (eq[1].mDip.tick (eq[1].mLo.tick (eq[1].loAtten.tick (eq[1].loBoost.tick (b))))))) * eq[1].autoGain;
+            }
+            if (solo) { const double v = soloSide ? b : a; a = b = v; }
+            else if (ms) { const double l = a + b, r = a - b; a = l; b = r; }
+            L[i] = (float) a; R[i] = (float) b;
+        }
+    }
+
+    // ---- the valve stage and the transformers, at 4x: 12AX7 gain stage into the 12AU7 output stage, 6X4 supply that sags
+    {
+        const double osRate = sr * 4.0;
+        const float aAtt = (float) (1.0 - std::exp (-1.0 / (0.010 * osRate))), aRel = (float) (1.0 - std::exp (-1.0 / (0.250 * osRate)));
+        const float aDc = (float) (MathConstants<double>::twoPi * 3.0 / osRate), aLow = (float) (MathConstants<double>::twoPi * 70.0 / osRate);
+        float envMax = 0.0f;
+        for (int off = 0; off < n; off += maxBlock)
+        {
+            const int len = jmin (maxBlock, n - off);
+            float* chans[2] { L + off, R + off };
+            dsp::AudioBlock<float> blk (chans, 2, (size_t) len);
+            auto up = oversampling.processSamplesUp (blk);
+            const int m = (int) up.getNumSamples();
+            for (int c = 0; c < 2; ++c)
+            {
+                auto* x = up.getChannelPointer ((size_t) c);
+                auto& v = valve[c];
+                float env = (float) v.env, dc = (float) v.dc, dc2 = (float) v.dc2, low = (float) v.lowband;
+                for (int i = 0; i < m; ++i)
+                {
+                    float s = x[i];
+                    dc += aDc * (s - dc); s -= dc;                                   // input transformer: no DC, nothing below a few Hz
+                    const float a = std::abs (s);
+                    env += (a - env) * (a > env ? aAtt : aRel);                      // 6X4: the supply sags under load
+                    const float sag = 1.0f + 0.8f * env;
+                    s = triode (s, 0.24f * sag, 0.06f);                              // 12AX7
+                    s = triode (s, 0.18f * sag, -0.03f);                             // 12AU7, leans the other way (some of the even order cancels)
+                    low += aLow * (s - low);                                          // output transformer: the iron gives in first at the bottom
+                    s += satLow (low) - low;
+                    dc2 += aDc * (s - dc2); s -= dc2;                                 // output transformer: no DC out
+                    x[i] = s;
+                }
+                v.env = env; v.dc = dc; v.dc2 = dc2; v.lowband = low;
+                envMax = jmax (envMax, env);
+            }
+            oversampling.processSamplesDown (blk);
+        }
+        heat += (jlimit (0.0f, 1.0f, envMax * 2.0f) - heat) * 0.3f;
+        valveHeat = heat;
+    }
+
+    // ---- output level
+    sOut.setTargetValue (Decibels::decibelsToGain (pOutput->load()));
+    float ms2[2] { 0.0f, 0.0f };
+    for (int i = 0; i < n; ++i)
+    {
+        const float g = sOut.getNextValue();
+        L[i] *= g; R[i] *= g;
+        ms2[0] += L[i] * L[i]; ms2[1] += R[i] * R[i];
+        peak = jmax (peak, std::abs (L[i]), std::abs (R[i]));
+    }
+    for (int c = 0; c < 2; ++c) { meterOut[c] = ms2[c] / (float) jmax (1, n); meterIn[c] = ins[c] / (float) jmax (1, n); }
+    peakOut = peak;
+}
+
+void EquanimityProcessor::getStateInformation (MemoryBlock& destData)
+{
+    if (auto xml = apvts.copyState().createXml()) copyXmlToBinary (*xml, destData);
+}
+
+void EquanimityProcessor::setStateInformation (const void* data, int sizeInBytes)
+{
+    auto xml = getXmlFromBinary (data, sizeInBytes);
+    if (xml != nullptr && xml->hasTagName (apvts.state.getType()))
+        apvts.replaceState (ValueTree::fromXml (*xml));
+}
+
+AudioProcessorEditor* EquanimityProcessor::createEditor() { return new ArtifactsEditor (*this); }
+AudioProcessor* JUCE_CALLTYPE createPluginFilter() { return new EquanimityProcessor(); }
