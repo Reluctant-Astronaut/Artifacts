@@ -56,6 +56,7 @@ static KeyInfo info (const String& id)
         { "zin", { 56, "ZOOM IN", "" } }, { "zout", { 57, "ZOOM OUT", "" } }, { "punchin", { 58, "PUNCH IN", "" } },
         { "punchout", { 59, "PUNCH OUT", "" } },
         { "channel", { 41, "CHANNEL", "" } }, { "markers", { 43, "MARKERS", "" } }, { "pool", { 43, "POOL", "" } }, { "audioconn", { 42, "CONNECTIONS", "" } },
+        { "trkup", { 61, "UP", "up" } }, { "trkdown", { 62, "DOWN", "down" } },
         { "newver", { 53, "NEW VERSION", "" } }, { "arm", { 58, "ARM", "" } }, { "monitor", { 59, "MONITOR", "" } } };
     return m.at (id);
 }
@@ -169,8 +170,9 @@ static Layout ipadFull()
     lampAbove (L, "play", "green", 163.0f); lampAbove (L, "rec", "red", 163.0f);
     lampAbove (L, "cycle", "amber", 163.0f);
     // track and arrange, right under the transport, with larger keys
-    bracket ("Track & Arrange", x0, full, 344.0f);
-    addRow (L, { "user", "zfull", "zin", "zout", "arm", "monitor", "channel" }, x0, 366.0f, full, 86.0f, 12.0f, false);
+    bracket ("Track & Arrange", x0, tw, 344.0f); bracket ("Track Select", x0 + tw + gap, mw, 344.0f);
+    addRow (L, { "zfull", "zin", "zout", "arm", "monitor", "channel" }, x0, 366.0f, tw, 86.0f, 12.0f, false);
+    addRow (L, { "trkup", "trkdown" }, x0 + tw + gap, 366.0f, mw, 86.0f, 14.0f, true);   // DOWN sits under MIXER
     // locate and edit
     const float lw = 530.0f, ew = full - lw - gap;
     bracket ("Locate", x0, lw, 482.0f); bracket ("Edit", x0 + lw + gap, ew, 482.0f);
@@ -200,6 +202,8 @@ static Path icon (const String& name)
                                 Path body = p ("M9 0 H17 L26 32 H0Z"); PathStrokeType (1.6f).createStrokedPath (body, body); r.addPath (body); }
     else if (name == "mixer") { for (float x : { 5.0f, 19.0f, 33.0f }) r.addRectangle (x, 0.0f, 2.0f, 34.0f);
                                 r.addRoundedRectangle (0.0f, 20.0f, 12.0f, 7.0f, 1.0f); r.addRoundedRectangle (14.0f, 6.0f, 12.0f, 7.0f, 1.0f); r.addRoundedRectangle (28.0f, 15.0f, 12.0f, 7.0f, 1.0f); }
+    else if (name == "up")    { r = p ("M15 0 L30 22 L0 22Z"); }
+    else if (name == "down")  { r = p ("M0 0 L30 0 L15 22Z"); }
     else if (name == "zero")  { r = p ("M30 0 L6 12 L30 24Z"); r.addRectangle (0.0f, 0.0f, 4.0f, 24.0f); }
     else if (name == "prev")  { r = p ("M14 0 L0 12 L14 24Z M18 2 H30 L34 8 L30 14 H18Z"); }
     else if (name == "next")  { r = p ("M0 2 H12 L16 8 L12 14 H0Z M20 0 L34 12 L20 24Z"); }
