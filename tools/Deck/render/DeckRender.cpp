@@ -71,6 +71,19 @@ static void addRow (Layout& L, StringArray ids, float x, float y, float w, float
         L.keys.push_back ({ ids[i], ki.cc, ki.label, ki.icon, { x + (float) i * (kw + gap), y, kw, h }, big });
     }
 }
+// a row whose keys share the width by weight (a weight of 1.5 makes a key half again as wide)
+static void addRowWeighted (Layout& L, StringArray ids, std::vector<float> weights, float x, float y, float w, float h, float gap, bool big = false)
+{
+    float total = 0; for (auto v : weights) total += v;
+    const float unit = (w - gap * (float) (ids.size() - 1)) / total;
+    for (int i = 0; i < ids.size(); ++i)
+    {
+        const auto ki = info (ids[i]);
+        const float kw = unit * weights[(size_t) i];
+        L.keys.push_back ({ ids[i], ki.cc, ki.label, ki.icon, { x, y, kw, h }, big });
+        x += kw + gap;
+    }
+}
 static void lampAbove (Layout& L, const String& keyId, const String& colour, float y)
 {
     for (auto& k : L.keys)
@@ -162,7 +175,7 @@ static Layout ipadFull()
     L.grooveY = 108.0f;
     const float x0 = 50.0f, full = W - 100.0f, gap = 40.0f;
     auto bracket = [&] (const char* t, float x, float w, float y) { L.brackets.push_back ({ t, Rectangle<int> ((int) x - 8, (int) y, (int) w + 16, 10) }); };
-    const float tw = 610.0f, mw = full - tw - gap;
+    const float tw = 660.0f, mw = full - tw - gap;   // the transport gets the most room
     // from the top: windows, locate and edit, track, and the transport at the bottom, nearest the hands
     bracket ("Windows", x0, full, 142.0f);
     addRow (L, { "dup", "audioconn", "vsti", "left", "lower", "right" }, x0, 164.0f, full, 60.0f, 12.0f, false);
@@ -176,7 +189,7 @@ static Layout ipadFull()
     addRow (L, { "zfull", "zin", "zout", "arm", "monitor", "channel" }, x0, 416.0f, tw, 86.0f, 12.0f, false);
     addRow (L, { "trkup", "trkdown" }, x0 + tw + gap, 416.0f, mw, 86.0f, 14.0f, true);   // DOWN sits above MIXER
     bracket ("Transport", x0, tw, 536.0f); bracket ("Mode & Mix", x0 + tw + gap, mw, 536.0f);
-    addRow (L, { "start", "rew", "ffw", "stop", "play", "rec" }, x0, 570.0f, tw, 140.0f, 14.0f, true);
+    addRowWeighted (L, { "start", "rew", "ffw", "stop", "play", "rec" }, { 0.85f, 0.85f, 0.85f, 1.3f, 1.45f, 1.0f }, x0, 570.0f, tw, 140.0f, 12.0f, true);   // STOP and PLAY wider
     addRow (L, { "cycle", "mixer" }, x0 + tw + gap, 570.0f, mw, 140.0f, 14.0f, true);
     lampAbove (L, "play", "green", 557.0f); lampAbove (L, "rec", "red", 557.0f);
     lampAbove (L, "cycle", "amber", 557.0f);
@@ -260,7 +273,8 @@ static void paintKey (Graphics& g, const KeyDef& k, bool lit)
         const float labelH = small ? 0.0f : (cap.getHeight() > 250.0f ? 40.0f : cap.getHeight() > 120.0f ? 26.0f : 15.0f);
         const float ih = small ? jmin (16.0f, cap.getHeight() * 0.36f) : jmin (cap.getHeight() > 250.0f ? 64.0f : cap.getHeight() > 120.0f ? 46.0f : 26.0f, cap.getHeight() * 0.36f);
         const auto ib = ic.getBounds();
-        const float sc = ih / jmax (ib.getHeight(), ib.getWidth() * 0.62f);
+        float sc = ih / jmax (ib.getHeight(), ib.getWidth() * 0.62f);
+        if (cap.getWidth() < 100.0f) sc = jmin (sc, cap.getWidth() * 0.62f / ib.getWidth());   // a narrow key: the symbol stays inside it
         const float iconCy = cap.getCentreY() - labelH * 0.5f;
         ic.applyTransform (AffineTransform::translation (-ib.getCentreX(), -ib.getCentreY()).scaled (sc).translated (cap.getCentreX(), iconCy));
         const Colour iconInk = k.icon == "rec" && glow < 0.5f ? Colour (0xffe8573f) : ink;   // the record dot is red, as on every tape machine
