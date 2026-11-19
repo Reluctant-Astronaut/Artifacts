@@ -170,7 +170,7 @@ static Layout ipadFull()
     lampAbove (L, "cycle", "amber", 163.0f);
     // track and arrange, right under the transport, with larger keys
     bracket ("Track & Arrange", x0, full, 344.0f);
-    addRow (L, { "channel", "zfull", "zin", "zout", "arm", "monitor", "user" }, x0, 366.0f, full, 86.0f, 12.0f, false);
+    addRow (L, { "user", "zfull", "zin", "zout", "arm", "monitor", "channel" }, x0, 366.0f, full, 86.0f, 12.0f, false);
     // locate and edit
     const float lw = 530.0f, ew = full - lw - gap;
     bracket ("Locate", x0, lw, 482.0f); bracket ("Edit", x0 + lw + gap, ew, 482.0f);
