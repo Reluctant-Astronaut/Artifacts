@@ -4,7 +4,7 @@ on: [push, workflow_dispatch]
 
 jobs:
   mac:
-    runs-on: macos-15
+    runs-on: macos-15-intel   # GitHub has had no free Apple Silicon Mac runners for this repo; an Intel Mac still builds both architectures
     permissions:
       contents: write   # to publish the "latest-build" release the Artifacts Button installs from
     steps:
