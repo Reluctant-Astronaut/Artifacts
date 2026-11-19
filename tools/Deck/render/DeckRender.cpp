@@ -162,28 +162,25 @@ static Layout ipadFull()
     L.grooveY = 108.0f;
     const float x0 = 50.0f, full = W - 100.0f, gap = 40.0f;
     auto bracket = [&] (const char* t, float x, float w, float y) { L.brackets.push_back ({ t, Rectangle<int> ((int) x - 8, (int) y, (int) w + 16, 10) }); };
-    // transport and modes
     const float tw = 610.0f, mw = full - tw - gap;
-    bracket ("Transport", x0, tw, 142.0f); bracket ("Mode & Mix", x0 + tw + gap, mw, 142.0f);
-    addRow (L, { "start", "rew", "ffw", "stop", "play", "rec" }, x0, 176.0f, tw, 140.0f, 14.0f, true);
-    addRow (L, { "cycle", "mixer" }, x0 + tw + gap, 176.0f, mw, 140.0f, 14.0f, true);
-    lampAbove (L, "play", "green", 163.0f); lampAbove (L, "rec", "red", 163.0f);
-    lampAbove (L, "cycle", "amber", 163.0f);
-    // track and arrange, right under the transport, with larger keys
-    bracket ("Track & Arrange", x0, tw, 344.0f); bracket ("Track Select", x0 + tw + gap, mw, 344.0f);
-    addRow (L, { "zfull", "zin", "zout", "arm", "monitor", "channel" }, x0, 366.0f, tw, 86.0f, 12.0f, false);
-    addRow (L, { "trkup", "trkdown" }, x0 + tw + gap, 366.0f, mw, 86.0f, 14.0f, true);   // DOWN sits under MIXER
-    // locate and edit
-    const float lw = 530.0f, ew = full - lw - gap;
-    bracket ("Locate", x0, lw, 482.0f); bracket ("Edit", x0 + lw + gap, ew, 482.0f);
-    addRow (L, { "prev", "next", "add", "click" }, x0, 504.0f, lw, 80.0f, 12.0f, true);
-    addRow (L, { "undo", "redo", "save", "newver" }, x0 + lw + gap, 504.0f, ew, 80.0f, 12.0f, false);
-    // windows
-    bracket ("Windows", x0, full, 614.0f);
-    addRow (L, { "dup", "audioconn", "vsti", "left", "lower", "right" }, x0, 636.0f, full, 60.0f, 12.0f, false);
+    // from the top: windows, locate and edit, track, and the transport at the bottom, nearest the hands
+    bracket ("Windows", x0, full, 142.0f);
+    addRow (L, { "dup", "audioconn", "vsti", "left", "lower", "right" }, x0, 164.0f, full, 60.0f, 12.0f, false);
     for (auto& k : L.keys)   // the Windows row in cream
         for (auto id : { "dup", "audioconn", "vsti", "left", "lower", "right" }) if (k.id == id) k.cream = true;
-    L.maker = { x0, 722.0f, full, 30.0f };
+    const float lw = 530.0f, ew = full - lw - gap;
+    bracket ("Locate", x0, lw, 258.0f); bracket ("Edit", x0 + lw + gap, ew, 258.0f);
+    addRow (L, { "prev", "next", "add", "click" }, x0, 280.0f, lw, 80.0f, 12.0f, true);
+    addRow (L, { "undo", "redo", "save", "newver" }, x0 + lw + gap, 280.0f, ew, 80.0f, 12.0f, false);
+    bracket ("Track & Arrange", x0, tw, 394.0f); bracket ("Track Select", x0 + tw + gap, mw, 394.0f);
+    addRow (L, { "zfull", "zin", "zout", "arm", "monitor", "channel" }, x0, 416.0f, tw, 86.0f, 12.0f, false);
+    addRow (L, { "trkup", "trkdown" }, x0 + tw + gap, 416.0f, mw, 86.0f, 14.0f, true);   // DOWN sits above MIXER
+    bracket ("Transport", x0, tw, 536.0f); bracket ("Mode & Mix", x0 + tw + gap, mw, 536.0f);
+    addRow (L, { "start", "rew", "ffw", "stop", "play", "rec" }, x0, 570.0f, tw, 140.0f, 14.0f, true);
+    addRow (L, { "cycle", "mixer" }, x0 + tw + gap, 570.0f, mw, 140.0f, 14.0f, true);
+    lampAbove (L, "play", "green", 557.0f); lampAbove (L, "rec", "red", 557.0f);
+    lampAbove (L, "cycle", "amber", 557.0f);
+    L.maker = { x0, 740.0f, full, 30.0f };
     return L;
 }
 
