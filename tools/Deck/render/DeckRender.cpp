@@ -13,7 +13,7 @@ using namespace juce;
 namespace Deck
 {
 // ------------------------------------------------------------------ what is on the panel
-struct KeyDef { String id; int cc; String label; String icon; Rectangle<float> r; bool big = false; };
+struct KeyDef { String id; int cc; String label; String icon; Rectangle<float> r; bool big = false; bool cream = false; };   // cream: the colour of the suite's cream knobs
 struct LampDef { String id; int cc; String colour; Point<float> c; };   // colour: green, red, amber, link
 struct Bracket { String title; Rectangle<int> r; };
 struct Layout
@@ -32,6 +32,7 @@ struct Layout
     bool fullScreen = false;           // the plate is the whole screen, no case around it
     float cornerR = 55.0f;             // the display's own corner radius (iPhone 15 about 55; the iPad 7 has square corners)
     float pxScale = 3.0f;              // pixels per point on the device
+    float linkScale = 1.0f;            // the LINK lamp's size (the iPad's is larger)
     Point<float> linkLabel;
     std::vector<Rectangle<float>> drums; // drum windows (plate coordinates), filled in by the counter painter
     std::vector<std::pair<String, Rectangle<float>>> drumLabels;
@@ -155,7 +156,8 @@ static Layout ipadFull()
     const float W = L.plate.getWidth();
     L.title = { 58.0f, 30.0f }; L.titleSize = 40.0f;
     L.lamps.push_back ({ "link", -1, "link", { W - 92.0f, 50.0f } });
-    L.linkLabel = { W - 92.0f, 67.0f };
+    L.linkScale = 1.6f;
+    L.linkLabel = { W - 92.0f, 77.0f };
     L.grooveY = 108.0f;
     const float x0 = 50.0f, full = W - 100.0f, gap = 40.0f;
     auto bracket = [&] (const char* t, float x, float w, float y) { L.brackets.push_back ({ t, Rectangle<int> ((int) x - 8, (int) y, (int) w + 16, 10) }); };
@@ -166,18 +168,20 @@ static Layout ipadFull()
     addRow (L, { "cycle", "mixer" }, x0 + tw + gap, 176.0f, mw, 140.0f, 14.0f, true);
     lampAbove (L, "play", "green", 163.0f); lampAbove (L, "rec", "red", 163.0f);
     lampAbove (L, "cycle", "amber", 163.0f);
+    // track and arrange, right under the transport, with larger keys
+    bracket ("Track & Arrange", x0, full, 344.0f);
+    addRow (L, { "channel", "zfull", "zin", "zout", "arm", "monitor", "user" }, x0, 366.0f, full, 86.0f, 12.0f, false);
     // locate and edit
-    const float lw = 480.0f, ew = full - lw - gap;
-    bracket ("Locate", x0, lw, 350.0f); bracket ("Edit", x0 + lw + gap, ew, 350.0f);
-    addRow (L, { "start", "prev", "next", "add" }, x0, 372.0f, lw, 90.0f, 12.0f, true);
-    addRow (L, { "undo", "redo", "save", "newver" }, x0 + lw + gap, 372.0f, ew, 90.0f, 12.0f, false);
-    // windows, arrange
-    bracket ("Windows", x0, full, 496.0f);
-    addRow (L, { "click", "channel", "audioconn", "markers", "vsti", "left", "lower", "right" }, x0, 518.0f, full, 64.0f, 12.0f, false);
-    for (auto& k : L.keys) if (k.id == "click") k.icon = {};   // a small key: the name reads better than the icon
-    bracket ("Track & Arrange", x0, full, 616.0f);
-    addRow (L, { "dup", "zfull", "zin", "zout", "arm", "monitor", "user" }, x0, 638.0f, full, 64.0f, 12.0f, false);
-    L.maker = { x0, 728.0f, full, 30.0f };
+    const float lw = 530.0f, ew = full - lw - gap;
+    bracket ("Locate", x0, lw, 482.0f); bracket ("Edit", x0 + lw + gap, ew, 482.0f);
+    addRow (L, { "start", "prev", "next", "add", "click" }, x0, 504.0f, lw, 80.0f, 12.0f, true);
+    addRow (L, { "undo", "redo", "save", "newver" }, x0 + lw + gap, 504.0f, ew, 80.0f, 12.0f, false);
+    // windows
+    bracket ("Windows", x0, full, 614.0f);
+    addRow (L, { "dup", "audioconn", "vsti", "left", "lower", "right" }, x0, 636.0f, full, 60.0f, 12.0f, false);
+    for (auto& k : L.keys)   // the Windows row in cream
+        for (auto id : { "dup", "audioconn", "vsti", "left", "lower", "right" }) if (k.id == id) k.cream = true;
+    L.maker = { x0, 722.0f, full, 30.0f };
     return L;
 }
 
@@ -214,7 +218,7 @@ static void paintKey (Graphics& g, const KeyDef& k, bool lit)
     const float rad = k.big ? 6.0f : 4.5f;
     const auto cap = r.reduced (1.0f).translated (lit ? 0.0f : -0.5f, lit ? 1.6f : 0.0f);
     if (! lit) { g.setColour (Colours::black.withAlpha (0.45f)); g.fillRoundedRectangle (cap.translated (1.2f, 2.0f), rad); }
-    const Colour dk (0xff2a0705), lt (0xff8f3126);
+    const Colour dk = k.cream ? Colour (0xffb3a27b) : Colour (0xff2a0705), lt = k.cream ? Colour (0xfff6efd8) : Colour (0xff8f3126);
     const float glow = lit ? 1.0f : 0.0f;
     if (glow > 0.0f && (cap.getHeight() > 250.0f || cap.getWidth() > cap.getHeight() * 1.4f))
     {
@@ -239,11 +243,11 @@ static void paintKey (Graphics& g, const KeyDef& k, bool lit)
     g.setColour (Colours::black.withAlpha (0.8f));
     g.drawRoundedRectangle (cap, rad, 0.9f);
 
-    const Colour ink = glow > 0.6f ? Colour (0xff2a1208) : Colour (0xffeae1c4).withAlpha (0.92f);
+    const Colour ink = glow > 0.6f ? Colour (0xff2a1208) : k.cream ? Colour (0xff2a2218) : Colour (0xffeae1c4).withAlpha (0.92f);
     auto text = [&] (const String& s, Rectangle<float> box, float size, float kern)
     {
         g.setFont (KintsugiFonts::serif (size).withExtraKerningFactor (kern));
-        g.setColour (Colours::black.withAlpha (0.4f));
+        g.setColour (k.cream ? Colours::white.withAlpha (0.45f) : Colours::black.withAlpha (0.4f));
         g.drawFittedText (s, box.translated (0.5f, 0.7f).toNearestInt(), Justification::centred, 1, 0.8f);
         g.setColour (ink);
         g.drawFittedText (s, box.toNearestInt(), Justification::centred, 1, 0.8f);
@@ -270,7 +274,8 @@ static void paintKey (Graphics& g, const KeyDef& k, bool lit)
     }
     else
     {
-        const float size = k.big ? 20.0f : (k.label.length() > 6 ? 11.5f : 13.0f);
+        const bool tall = ! k.big && cap.getHeight() > 75.0f && cap.getWidth() > 110.0f;   // the iPad's Track & Arrange keys
+        const float size = k.big ? 20.0f : tall ? (k.label.length() > 6 ? 13.5f : 15.5f) : (k.label.length() > 6 ? 11.5f : 13.0f);
         text (k.label, cap.reduced (3.0f, 0.0f), size, k.big ? 0.22f : 0.08f);
     }
 }
@@ -663,6 +668,8 @@ static Image composeScreen (Layout& L, float scale, const std::set<String>& litL
     for (auto& l : L.lamps)
     {
         const bool on = litLamps.count (l.id) > 0;
+        Graphics::ScopedSaveState ss (g);
+        if (l.colour == "link") g.addTransform (AffineTransform::scale (L.linkScale, L.linkScale, l.c.x, l.c.y));
         paintLamp (g, l.c, l.colour == "link" ? (on ? "green" : "amber") : l.colour, on ? 1.0f : 0.0f);
     }
     // the counter: right-aligned bars, then beat, sixteenth, ticks
@@ -719,7 +726,7 @@ static String layoutJSON (Layout& L)
 {
     auto num = [] (float v) { return String (v, 2); };
     auto rect = [&] (Rectangle<float> r) { return "[" + num (r.getX()) + "," + num (r.getY()) + "," + num (r.getWidth()) + "," + num (r.getHeight()) + "]"; };
-    String s = "{\"screen\":[" + String (L.screenW) + "," + String (L.screenH) + "],\"plate\":" + rect (L.plate) + ",\"keys\":[";
+    String s = "{\"screen\":[" + String (L.screenW) + "," + String (L.screenH) + "],\"plate\":" + rect (L.plate) + ",\"linkScale\":" + num (L.linkScale) + ",\"keys\":[";
     for (size_t i = 0; i < L.keys.size(); ++i)
     {
         auto& k = L.keys[i];
