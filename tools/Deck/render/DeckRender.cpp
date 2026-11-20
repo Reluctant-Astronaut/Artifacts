@@ -13,7 +13,7 @@ using namespace juce;
 namespace Deck
 {
 // ------------------------------------------------------------------ what is on the panel
-struct KeyDef { String id; int cc; String label; String icon; Rectangle<float> r; bool big = false; bool cream = false; };   // cream: the colour of the suite's cream knobs
+struct KeyDef { String id; int cc; String label; String icon; Rectangle<float> r; bool big = false; bool cream = false; bool brass = false; };   // cream: the colour of the suite's cream knobs; brass: the round brass hero button
 struct LampDef { String id; int cc; String colour; Point<float> c; };   // colour: green, red, amber, link
 struct Bracket { String title; Rectangle<int> r; };
 struct Layout
@@ -32,6 +32,7 @@ struct Layout
     bool fullScreen = false;           // the plate is the whole screen, no case around it
     float cornerR = 55.0f;             // the display's own corner radius (iPhone 15 about 55; the iPad 7 has square corners)
     float pxScale = 3.0f;              // pixels per point on the device
+    float armrestH = 0.0f;            // a wooden arm rest along the bottom of the screen (iPad UF)
     float linkScale = 1.0f;            // the LINK lamp's size (the iPad's is larger)
     Point<float> linkLabel;
     std::vector<Rectangle<float>> drums; // drum windows (plate coordinates), filled in by the counter painter
@@ -57,6 +58,7 @@ static KeyInfo info (const String& id)
         { "punchout", { 59, "PUNCH OUT", "" } },
         { "channel", { 41, "CHANNEL", "" } }, { "markers", { 43, "MARKERS", "" } }, { "pool", { 43, "POOL", "" } }, { "audioconn", { 42, "CONNECTIONS", "" } },
         { "trkup", { 61, "UP", "up" } }, { "trkdown", { 62, "DOWN", "down" } },
+        { "solo", { 63, "SOLO", "" } }, { "playstop", { 23, "PLAY  \xc2\xb7  STOP", "playstop" } }, { "mute", { 64, "MUTE", "" } }, { "trkleft", { 61, "", "left" } }, { "trkright", { 62, "", "right" } },
         { "newver", { 53, "NEW VERSION", "" } }, { "arm", { 58, "ARM", "" } }, { "monitor", { 59, "MONITOR", "" } } };
     return m.at (id);
 }
@@ -214,6 +216,9 @@ static Path icon (const String& name)
                                 r.addRoundedRectangle (0.0f, 20.0f, 12.0f, 7.0f, 1.0f); r.addRoundedRectangle (14.0f, 6.0f, 12.0f, 7.0f, 1.0f); r.addRoundedRectangle (28.0f, 15.0f, 12.0f, 7.0f, 1.0f); }
     else if (name == "up")    { r = p ("M15 0 L30 22 L0 22Z"); }
     else if (name == "down")  { r = p ("M0 0 L30 0 L15 22Z"); }
+    else if (name == "left")  { r = p ("M22 0 L22 30 L0 15Z"); }
+    else if (name == "right") { r = p ("M0 0 L22 15 L0 30Z"); }
+    else if (name == "playstop") { r = p ("M0 0 L28 15 L0 30Z"); r.addRoundedRectangle (40.0f, 2.0f, 26.0f, 26.0f, 2.0f); }
     else if (name == "zero")  { r = p ("M30 0 L6 12 L30 24Z"); r.addRectangle (0.0f, 0.0f, 4.0f, 24.0f); }
     else if (name == "prev")  { r = p ("M14 0 L0 12 L14 24Z M18 2 H30 L34 8 L30 14 H18Z"); }
     else if (name == "next")  { r = p ("M0 2 H12 L16 8 L12 14 H0Z M20 0 L34 12 L20 24Z"); }
@@ -225,8 +230,65 @@ static Path icon (const String& name)
 // ------------------------------------------------------------------ the parts, painted as the suite paints them
 // A key: as the Path keys on Equanimity, larger. A dark oxblood cap with cream lettering in its well;
 // held down it sits lower and lights amber from within.
+// The hero button: solid turned brass, a knurled bezel, a domed cap; held down it sinks and glows amber round its rim
+static void paintBrassButton (Graphics& g, const KeyDef& k, bool lit)
+{
+    const Colour brassLite (0xfff0d998), brass (0xffc39b4e), brassDark (0xff6f5422), brassDeep (0xff3e2f14);
+    const auto c = k.r.getCentre();
+    const float R = k.r.getWidth() * 0.5f;
+    if (lit)
+        for (int i = 10; i >= 1; --i)
+        {
+            g.setColour (Colour (0xffffa040).withAlpha (0.05f));
+            g.fillEllipse (Rectangle<float> ((R + (float) i * 2.4f) * 2.0f, (R + (float) i * 2.4f) * 2.0f).withCentre (c));
+        }
+    // the bezel, let into the plate: knurled brass ring
+    for (int i = 1; i <= 6; ++i)
+    {
+        g.setColour (Colours::black.withAlpha (0.08f));
+        g.fillEllipse (Rectangle<float> (R * 2.0f + (float) i, R * 2.0f + (float) i).withCentre (c.translated (1.0f + i * 0.5f, 1.6f + i * 0.7f)));
+    }
+    g.setGradientFill (ColourGradient (brassLite, c.x - R, c.y - R, brassDeep, c.x + R, c.y + R, false));
+    g.fillEllipse (Rectangle<float> (R * 2.0f, R * 2.0f).withCentre (c));
+    for (int i = 0; i < 96; ++i)
+    {
+        const float a = (float) i * MathConstants<float>::twoPi / 96.0f;
+        g.setColour ((i % 2 ? brassDeep : brassLite).withAlpha (0.35f));
+        g.drawLine ({ c.getPointOnCircumference (R * 0.86f, a), c.getPointOnCircumference (R * 0.99f, a) }, 0.8f);
+    }
+    g.setColour (brassDeep.withAlpha (0.9f));
+    g.drawEllipse (Rectangle<float> (R * 2.0f, R * 2.0f).withCentre (c), 0.9f);
+    // the gap the button moves in
+    const float Rb = R * 0.80f;
+    g.setColour (Colour (0xff120d06));
+    g.fillEllipse (Rectangle<float> (Rb * 2.0f, Rb * 2.0f).withCentre (c));
+    if (lit)
+    {
+        g.setGradientFill (ColourGradient (Colour (0xffffb257).withAlpha (0.9f), c.x, c.y, Colour (0xffffa040).withAlpha (0.0f), c.x + Rb, c.y, true));
+        g.fillEllipse (Rectangle<float> (Rb * 2.0f, Rb * 2.0f).withCentre (c));
+    }
+    // the cap: domed, turned, polished; lower when held
+    const float Rc = R * 0.72f;
+    const auto cc = c.translated (0.0f, lit ? 1.2f : -0.4f);
+    if (! lit) { g.setColour (Colours::black.withAlpha (0.5f)); g.fillEllipse (Rectangle<float> (Rc * 2.0f, Rc * 2.0f).withCentre (cc.translated (1.0f, 2.0f))); }
+    g.setGradientFill (ColourGradient (lit ? brassLite.interpolatedWith (Colour (0xffffc070), 0.4f) : brassLite, cc.x - Rc * 0.5f, cc.y - Rc * 0.6f,
+                                       brassDark, cc.x + Rc, cc.y + Rc, true));
+    g.fillEllipse (Rectangle<float> (Rc * 2.0f, Rc * 2.0f).withCentre (cc));
+    Random rng (4242);
+    for (float rr = Rc * 0.1f; rr < Rc; rr += 0.9f)   // the turning marks
+    {
+        g.setColour ((rng.nextBool() ? brassLite : brassDeep).withAlpha (0.05f + 0.06f * rng.nextFloat()));
+        g.drawEllipse (Rectangle<float> (rr * 2.0f, rr * 2.0f).withCentre (cc), 0.5f);
+    }
+    g.setGradientFill (ColourGradient (Colours::white.withAlpha (0.55f), cc.x - Rc * 0.35f, cc.y - Rc * 0.45f, Colours::white.withAlpha (0.0f), cc.x - Rc * 0.35f + Rc * 0.55f, cc.y - Rc * 0.45f, true));
+    g.fillEllipse (Rectangle<float> (Rc * 2.0f, Rc * 2.0f).withCentre (cc));
+    g.setColour (brassDeep.withAlpha (0.85f));
+    g.drawEllipse (Rectangle<float> (Rc * 2.0f, Rc * 2.0f).withCentre (cc), 0.9f);
+}
+
 static void paintKey (Graphics& g, const KeyDef& k, bool lit)
 {
+    if (k.brass) { paintBrassButton (g, k, lit); return; }
     const auto r = k.r;
     const float m = jmin (r.getWidth(), r.getHeight());
     const float rad = k.big ? 6.0f : 4.5f;
@@ -266,12 +328,35 @@ static void paintKey (Graphics& g, const KeyDef& k, bool lit)
         g.setColour (ink);
         g.drawFittedText (s, box.toNearestInt(), Justification::centred, 1, 0.8f);
     };
-    if (k.icon.isNotEmpty())
+    if (k.id == "playstop")
+    {
+        // the maker's name in place of a symbol, printed in black and worn like the plate's print
+        const float s = 4.0f;
+        Image logo (Image::ARGB, (int) (cap.getWidth() * s), (int) (cap.getHeight() * s), true);
+        {
+            Graphics lg (logo);
+            lg.addTransform (AffineTransform::scale (s));
+            const float w = cap.getWidth(), cy = cap.getHeight() * 0.5f;
+            lg.setColour (Colour (0xff120f0c));
+            lg.setFont (KintsugiFonts::serif (10.5f).withExtraKerningFactor (0.42f));
+            lg.drawText ("RELUCTANT", Rectangle<float> (0.0f, cy - 24.0f, w, 14.0f), Justification::centred);
+            lg.setFont (KintsugiFonts::serif (24.0f).withExtraKerningFactor (0.12f));
+            lg.drawText ("ASTRONAUT", Rectangle<float> (0.0f, cy - 12.0f, w, 28.0f), Justification::centred);
+            lg.setFont (KintsugiFonts::serif (10.0f).withExtraKerningFactor (0.32f));
+            lg.drawText (k.label, Rectangle<float> (0.0f, cy + 19.0f, w, 14.0f), Justification::centred);
+        }
+        wearPrint (logo, 61, 1.0f);
+        g.setOpacity (glow > 0.6f ? 0.9f : 0.78f);
+        g.drawImage (logo, cap);
+        g.setOpacity (1.0f);
+    }
+    else if (k.icon.isNotEmpty())
     {
         auto ic = icon (k.icon);
         const bool small = ! k.big;
-        const float labelH = small ? 0.0f : (cap.getHeight() > 250.0f ? 40.0f : cap.getHeight() > 120.0f ? 26.0f : 15.0f);
-        const float ih = small ? jmin (16.0f, cap.getHeight() * 0.36f) : jmin (cap.getHeight() > 250.0f ? 64.0f : cap.getHeight() > 120.0f ? 46.0f : 26.0f, cap.getHeight() * 0.36f);
+        const bool bar = cap.getWidth() > 300.0f;   // the long PLAY / STOP bar
+        const float labelH = small ? 0.0f : bar ? 22.0f : (cap.getHeight() > 250.0f ? 40.0f : cap.getHeight() > 120.0f ? 26.0f : 15.0f);
+        const float ih = small ? jmin (16.0f, cap.getHeight() * 0.36f) : (bar ? 32.0f : jmin (cap.getHeight() > 250.0f ? 64.0f : cap.getHeight() > 120.0f ? 46.0f : 26.0f, cap.getHeight() * 0.36f));
         const auto ib = ic.getBounds();
         float sc = ih / jmax (ib.getHeight(), ib.getWidth() * 0.62f);
         if (cap.getWidth() < 100.0f) sc = jmin (sc, cap.getWidth() * 0.62f / ib.getWidth());   // a narrow key: the symbol stays inside it
@@ -283,7 +368,8 @@ static void paintKey (Graphics& g, const KeyDef& k, bool lit)
         g.setColour (iconInk);
         g.fillPath (ic);
         if (! small)
-            if (cap.getHeight() > 250.0f) text (k.label, { cap.getX(), cap.getBottom() - 58.0f, cap.getWidth(), 26.0f }, 19.0f, 0.22f);
+            if (bar) text (k.label, { cap.getX(), cap.getBottom() - 30.0f, cap.getWidth(), 20.0f }, 14.0f, 0.3f);
+            else if (cap.getHeight() > 250.0f) text (k.label, { cap.getX(), cap.getBottom() - 58.0f, cap.getWidth(), 26.0f }, 19.0f, 0.22f);
             else if (cap.getHeight() > 120.0f) text (k.label, { cap.getX(), cap.getBottom() - 36.0f, cap.getWidth(), 20.0f }, 15.0f, 0.2f);
             else text (k.label, { cap.getX(), cap.getBottom() - 21.0f, cap.getWidth(), 14.0f }, 10.5f, 0.16f);
     }
@@ -485,6 +571,42 @@ static float roundedInset (float px, float py, float w, float h, float r)   // d
     const float outside = std::sqrt (jmax (qx, 0.0f) * jmax (qx, 0.0f) + jmax (qy, 0.0f) * jmax (qy, 0.0f)) + jmin (jmax (qx, qy), 0.0f) - r;
     return -outside;
 }
+// The arm rest: a rounded rail of walnut along the bottom, the wood and the light of the suite's walnut case
+static void paintArmrest (Image& screen, const Layout& L, float scale)
+{
+    const int iw = screen.getWidth();
+    const int top = (int) std::round (((float) L.screenH - L.armrestH) * scale), ih = screen.getHeight();
+    const float H = (float) (ih - top);
+    const float Lx = -0.48f, Ly = -0.56f, Lz = 0.68f;
+    const float hx = Lx, hy = Ly, hz = Lz + 1.0f, hl = std::sqrt (hx * hx + hy * hy + hz * hz);
+    Image::BitmapData bd (screen, Image::BitmapData::readWrite);
+    for (int y = top; y < ih; ++y)
+        for (int x = 0; x < iw; ++x)
+        {
+            const float a = ((float) (y - top) + 0.5f) / H;                // 0 at the plate, 1 at the front edge
+            // the profile: a big roundover towards you, flat on top, a small one at the back
+            auto prof = [] (float t) { return t < 0.18f ? std::sqrt (jmax (0.0f, 1.0f - std::pow (1.0f - t / 0.18f, 2.0f))) * 0.18f
+                                               : t > 0.55f ? 0.18f * std::sqrt (jmax (0.0f, 1.0f - std::pow ((t - 0.55f) / 0.45f, 2.0f))) : 0.18f; };
+            const float da = 0.004f, slope = (prof (jmin (1.0f, a + da)) - prof (jmax (0.0f, a - da))) / (2.0f * da) * 3.2f;
+            const float nx = 0.0f, ny = -slope;
+            Colour base = woodAt ((float) y * 1.0f, (float) x, 41, Colour (0xff1e120a), Colour (0xff46291a), Colour (0xff7e5634), 0.6f);
+            const float nl = std::sqrt (nx * nx + ny * ny + 1.0f);
+            const float ndl = jmax (0.0f, (nx * Lx + ny * Ly + Lz) / nl);
+            const float shade = 0.42f + 0.58f * ndl / Lz;
+            const float ndh = jmax (0.0f, (nx * hx + ny * hy + hz) / (nl * hl));
+            const float spec = 0.16f * std::pow (ndh, 14.0f);
+            // the edges a hand rests on are polished a little lighter
+            const float polish = 0.06f * std::exp (-std::pow ((a - 0.35f) / 0.2f, 2.0f));
+            bd.setPixelColour (x, y, Colour::fromFloatRGBA (jlimit (0.0f, 1.0f, base.getFloatRed() * shade + spec + polish),
+                                                            jlimit (0.0f, 1.0f, base.getFloatGreen() * shade + spec * 0.95f + polish * 0.8f),
+                                                            jlimit (0.0f, 1.0f, base.getFloatBlue() * shade + spec * 0.85f + polish * 0.6f), 1.0f));
+        }
+    // the seam between the plate and the wood
+    for (int x = 0; x < iw; ++x)
+        for (int k = 0; k < (int) (2.0f * scale); ++k)
+            bd.setPixelColour (x, top + k, Colour (0xff070504));
+}
+
 static Image roundedEdge (const Layout& L, const Image& plate, float scale)
 {
     const int iw = (int) (L.screenW * scale), ih = (int) (L.screenH * scale);
@@ -549,6 +671,7 @@ static Image roundedEdge (const Layout& L, const Image& plate, float scale)
     }
     g.setColour (Colour (0xff070605));
     g.strokePath (platePath, PathStrokeType (1.8f));
+    if (L.armrestH > 0.0f) paintArmrest (screen, L, scale);
     return screen;
 }
 
@@ -583,10 +706,12 @@ static Image renderBackground (Layout& L, float scale)
             pg.drawText ("LINK", Rectangle<float> (60.0f, 14.0f).withCentre (L.linkLabel.translated (0.0f, 4.0f)), Justification::centred);
             // the maker's name, as on the plugins
             const auto m = L.maker;
+            if (! m.isEmpty()) {
             pg.setFont (KintsugiFonts::serif (8.5f).withExtraKerningFactor (0.42f));
             pg.drawText ("RELUCTANT", Rectangle<float> (m.getCentreX() - 110.0f, m.getY(), 220.0f, 12.0f), Justification::centred);
             pg.setFont (KintsugiFonts::serif (17.0f).withExtraKerningFactor (0.12f));
             pg.drawText ("ASTRONAUT", Rectangle<float> (m.getCentreX() - 130.0f, m.getY() + 10.0f, 260.0f, 22.0f), Justification::centred);
+            }
         }
         wearPrint (print, 78, 1.0f);
         g.drawImageAt (print, 0, 0);
@@ -627,6 +752,7 @@ static Image renderBackground (Layout& L, float scale)
         // the wells the keys sit in
         for (auto& k : L.keys)
         {
+            if (k.brass) continue;   // the brass button sits in its own bezel
             g.setColour (Colours::black.withAlpha (0.55f));
             g.fillRoundedRectangle (k.r.expanded (1.8f), k.big ? 7.0f : 5.5f);
             g.setColour (Colours::white.withAlpha (0.10f));
@@ -797,6 +923,330 @@ static Image renderIcon (int size)
 }
 } // namespace Deck
 
+
+namespace Deck {
+// ================================================================== Deck RA-1 "UF" : the iPad as a one-channel control surface
+// In the spirit of SSL's UF1: a channel strip with a long fader, a display, four encoders under it, transport and a jog wheel.
+struct UFExtras
+{
+    Rectangle<float> chanDisplay, display, fader, jog;
+    Point<float> pan;
+    std::vector<Point<float>> encoders;
+};
+static Layout ipadUF (UFExtras& X)
+{
+    Layout L; L.name = "ipad"; L.screenW = 1080; L.screenH = 810;
+    L.plate = { 10.0f, 10.0f, 1060.0f, 790.0f };
+    L.fullScreen = true; L.cornerR = 0.0f; L.pxScale = 2.0f;
+    const float W = L.plate.getWidth();
+    L.title = { 50.0f, 22.0f }; L.titleSize = 36.0f;
+    L.lamps.push_back ({ "link", -1, "link", { W - 84.0f, 42.0f } });
+    L.linkScale = 1.6f; L.linkLabel = { W - 84.0f, 69.0f };
+    L.grooveY = 96.0f;
+    auto bracket = [&] (const char* t, float x, float w, float y) { L.brackets.push_back ({ t, Rectangle<int> ((int) x - 8, (int) y, (int) w + 16, 10) }); };
+    // ---- one grid for both halves: the display's top and bottom, the transport's rows
+    const float gTop = 142.0f, gDispBot = 338.0f, gRow1 = 390.0f, gRow1H = 76.0f, gRow2 = 486.0f, gRow2H = 110.0f, gBar = 612.0f, gBarH = 84.0f;
+    // ---- the channel strip, left
+    const float cx0 = 40.0f, cw = 262.0f;
+    bracket ("Channel", cx0, cw, 124.0f);
+    X.chanDisplay = {};   // the big display shows the track: no second one
+    X.pan = { cx0 + 70.0f, 198.0f };
+    X.fader = { cx0 + 40.0f, 284.0f, 60.0f, 402.0f };            // the travel of the cap
+    const float bx = cx0 + 150.0f, bw = cw - 150.0f;
+    auto key = [&] (const char* id, float y, float h, bool big = false) { const auto ki = info (id); L.keys.push_back ({ id, ki.cc, ki.label, ki.icon, { bx, y, bw, h }, big }); };
+    {   // SOLO, MUTE, ARM, MONITOR: from the display's top to its bottom
+        const float g = 8.0f, h = (gDispBot - gTop - 3.0f * g) / 4.0f;
+        key ("solo", gTop, h); key ("mute", gTop + (h + g), h); key ("arm", gTop + 2.0f * (h + g), h); key ("monitor", gTop + 3.0f * (h + g), h);
+    }
+    key ("channel", gRow1, gRow1H);                                  // level with the upper transport row
+    {   // track select: left / right, level with the lower transport row
+        const auto l = info ("trkleft"), r = info ("trkright");
+        L.keys.push_back ({ "trkleft", l.cc, "", "left", { bx, gRow2, bw * 0.5f - 4.0f, gRow2H }, false });
+        L.keys.push_back ({ "trkright", r.cc, "", "right", { bx + bw * 0.5f + 4.0f, gRow2, bw * 0.5f - 4.0f, gRow2H }, false });
+    }
+    // ---- the display and the transport, right
+    const float rx = 336.0f, rw = W - rx - 40.0f;
+    bracket ("Display", rx, rw, 124.0f);
+    X.display = { rx, gTop, rw, gDispBot - gTop };
+    bracket ("Transport", rx, rw, 370.0f);
+    const float gap = 8.0f, u = (rw - 8.0f * gap) / 9.0f;           // nine small keys; the big ones span two or three of them
+    addRow (L, { "start", "prev", "next", "add", "cycle", "click", "undo", "redo", "vsti" }, rx, gRow1, rw, gRow1H, gap, false);
+    for (auto& k : L.keys) if (k.id == "start" || k.id == "prev" || k.id == "next" || k.id == "add" || k.id == "cycle" || k.id == "click") k.icon = {};
+    {
+        float x = rx;
+        for (auto [id, span] : { std::pair { "rew", 2 }, std::pair { "ffw", 2 }, std::pair { "rec", 2 }, std::pair { "mixer", 3 } })
+        {
+            const auto ki = info (id);
+            const float w = u * (float) span + gap * (float) (span - 1);
+            L.keys.push_back ({ id, ki.cc, ki.label, ki.icon, { x, gRow2, w, gRow2H }, true });
+            x += w + gap;
+        }
+    }
+    {   // the hero: a round brass push button under the track arrows, level with the PLAY / STOP bar. It opens Audio Connections.
+        const auto ki = info ("audioconn");
+        const float d = gBarH - 10.0f;
+        KeyDef b { "audioconn", ki.cc, "CONNECTIONS", "", Rectangle<float> (d, d).withCentre ({ bx + bw * 0.5f, gBar + gBarH * 0.5f }), false };
+        b.brass = true;
+        L.keys.push_back (b);
+    }
+    {   // PLAY / STOP: one long key below everything, like a space bar, with the maker's name on it
+        const auto ki = info ("playstop");
+        L.keys.push_back ({ "playstop", ki.cc, String::fromUTF8 (ki.label), ki.icon, { rx, gBar, rw, gBarH }, true });
+    }
+    // all keys in the same red (MIXER too)
+    X.jog = {};
+    L.armrestH = 56.0f;                                              // a wooden arm rest along the bottom, as on a console
+    L.plate = { 10.0f, 10.0f, 1060.0f, (float) L.screenH - 10.0f - L.armrestH };
+    L.maker = {};   // the maker's name is on the PLAY / STOP bar
+    return L;
+}
+
+// the amber vacuum-fluorescent display, behind glass, in the Console's leatherette meter frame
+static void paintVFDFrame (Graphics& g, Rectangle<float> vb)
+{
+    g.setColour (Colours::black.withAlpha (0.35f));
+    g.fillRoundedRectangle (vb.translated (1.2f, 2.0f), 4.0f);
+    g.setGradientFill (ColourGradient (Colour (0xff35403c), vb.getX(), vb.getY(), Colour (0xff1f2724), vb.getRight(), vb.getBottom(), false));
+    g.fillRoundedRectangle (vb, 4.0f);
+    {
+        Graphics::ScopedSaveState ss (g);
+        Path cp; cp.addRoundedRectangle (vb, 4.0f);
+        g.reduceClipRegion (cp);
+        Random rng (88);
+        for (int i = 0; i < (int) (vb.getWidth() * vb.getHeight() * 0.55f); ++i)
+        {
+            const Point<float> o (vb.getX() + rng.nextFloat() * vb.getWidth(), vb.getY() + rng.nextFloat() * vb.getHeight());
+            const float d = 0.6f + 1.0f * rng.nextFloat();
+            g.setColour ((rng.nextInt (3) == 0 ? Colour (0xff0c110f) : Colour (0xffa9b8ae)).withAlpha (0.07f + 0.15f * rng.nextFloat()));
+            g.fillEllipse (Rectangle<float> (d * (1.0f + rng.nextFloat()), d).withCentre (o));
+        }
+    }
+    g.setColour (Colours::white.withAlpha (0.14f));
+    g.drawRoundedRectangle (vb.reduced (0.6f).translated (0.3f, 0.4f), 3.6f, 0.7f);
+    g.setColour (Colours::black.withAlpha (0.8f));
+    g.drawRoundedRectangle (vb, 4.0f, 0.9f);
+    const auto glass = vb.reduced (8.0f);
+    g.setColour (Colour (0xff050605));
+    g.fillRoundedRectangle (glass.expanded (1.2f), 3.0f);
+    g.setGradientFill (ColourGradient (Colour (0xff121611), glass.getCentreX(), glass.getY(), Colour (0xff070807), glass.getCentreX(), glass.getBottom(), false));
+    g.fillRoundedRectangle (glass, 2.5f);
+}
+static void vfdText (Graphics& g, const String& t, Rectangle<float> r, float size, Justification j, bool bold = false, float alpha = 1.0f)
+{
+    const Colour amber (0xffffb347);
+    g.setFont (KintsugiFonts::serif (size, bold).withExtraKerningFactor (0.06f));
+    for (auto [dx, dy, a] : { std::tuple { 0.0f, 0.0f, 0.22f }, std::tuple { 0.8f, 0.0f, 0.12f }, std::tuple { -0.8f, 0.0f, 0.12f }, std::tuple { 0.0f, 0.8f, 0.12f } })
+    {
+        g.setColour (amber.withAlpha (a * alpha));
+        g.drawText (t, r.translated (dx, dy).expanded (1.0f), j);
+    }
+    g.setColour (amber.withAlpha (0.95f * alpha));
+    g.drawText (t, r, j);
+}
+static void vfdGlassSheen (Graphics& g, Rectangle<float> glass)
+{
+    g.setGradientFill (ColourGradient (Colours::white.withAlpha (0.07f), glass.getX(), glass.getY(),
+                                       Colours::white.withAlpha (0.0f), glass.getX() + glass.getWidth() * 0.35f, glass.getY() + glass.getHeight() * 0.6f, false));
+    g.fillRoundedRectangle (glass, 2.5f);
+}
+
+// staticPart: what is printed in the glass and never changes (the unlit segments, the cells and their names, the meter's scale);
+// livePart: what the Deck draws itself, live, in the app (track name, time, lit segments, values)
+static void paintDisplays (Graphics& g, const UFExtras& X, bool staticPart = true, bool livePart = true)
+{
+    const Colour amber (0xffffb347);
+    // the channel display over the strip
+    if (! X.chanDisplay.isEmpty())
+    {
+        paintVFDFrame (g, X.chanDisplay);
+        const auto gl = X.chanDisplay.reduced (8.0f);
+        vfdText (g, "LEAD VOX", gl.withTrimmedLeft (10.0f).withHeight (gl.getHeight() * 0.58f), 21.0f, Justification::centredLeft, true);
+        vfdText (g, "TRACK 7", gl.withTrimmedLeft (10.0f).withTrimmedTop (gl.getHeight() * 0.56f), 11.0f, Justification::centredLeft, false, 0.75f);
+        vfdText (g, "-4.5 dB", gl.withTrimmedRight (10.0f).withTrimmedTop (gl.getHeight() * 0.56f), 11.0f, Justification::centredRight, false, 0.75f);
+        vfdGlassSheen (g, gl);
+    }
+    // the main display (its frame is in paintUFStatic)
+    const auto gl = X.display.reduced (8.0f).reduced (14.0f, 10.0f);
+    if (livePart) vfdText (g, "7  LEAD VOX", { gl.getX(), gl.getY(), gl.getWidth() * 0.55f, 34.0f }, 28.0f, Justification::centredLeft, true);
+    if (livePart) vfdText (g, "BARS", { gl.getRight() - 300.0f, gl.getY() + 2.0f, 60.0f, 14.0f }, 9.5f, Justification::centredLeft, false, 0.6f);
+    if (livePart) vfdText (g, "12 .  3 .  2 .  480", { gl.getRight() - 300.0f, gl.getY(), 300.0f, 34.0f }, 26.0f, Justification::centredRight, true);
+    // meters of the selected channel: two rows of segments
+    const float my = gl.getY() + 48.0f, mw = gl.getWidth();
+    for (int ch = 0; ch < 2; ++ch)
+    {
+        const float y = my + (float) ch * 13.0f, level = ch == 0 ? 0.72f : 0.66f;
+        if (staticPart) vfdText (g, ch == 0 ? "L" : "R", { gl.getX(), y - 2.0f, 12.0f, 12.0f }, 9.5f, Justification::centredLeft, false, 0.7f);
+        const int segs = 48;
+        for (int s = 0; s < segs; ++s)
+        {
+            const float sx = gl.getX() + 18.0f + (mw - 18.0f) * (float) s / (float) segs;
+            const bool on = livePart && (float) s / (float) segs < level;
+            const bool hot = s >= segs - 6;
+            if (on ? ! livePart : ! staticPart) continue;
+            g.setColour ((hot ? Colour (0xffff5a3a) : amber).withAlpha (on ? 0.9f : 0.10f));
+            g.fillRect (sx, y, (mw - 18.0f) / (float) segs - 2.0f, 8.0f);
+        }
+    }
+    if (staticPart)   // the scale under the segments: each mark where its level lights (-60 dB at the left end, +6 at the right)
+        for (int db : { -40, -20, -10, -6, -3, 0 })
+        {
+            const float f = ((float) db + 60.0f) / 66.0f, sx = gl.getX() + 18.0f + (mw - 18.0f) * f;
+            vfdText (g, String (db), { sx - 20.0f, my + 26.0f, 40.0f, 12.0f }, 8.5f, Justification::centred, false, 0.45f);
+        }
+    // the four encoders' parameters: names and values, each over its knob
+    const char* names[4] = { "VOLUME", "PAN", "SEND 1", "TRACK" };
+    const char* vals[4] = { "-4.5 dB", "L 12", "-12.0 dB", "ARM  \xc2\xb7  MON" };
+    for (int i = 0; i < 4; ++i)
+    {
+        const float cw = gl.getWidth() / 4.0f;   // four cells across the glass, inside its edges
+        const Rectangle<float> cell (gl.getX() + cw * (float) i + 5.0f, gl.getBottom() - 46.0f, cw - 10.0f, 46.0f);
+        if (staticPart)
+        {
+            g.setColour (amber.withAlpha (0.25f));
+            g.drawRoundedRectangle (cell, 3.0f, 0.8f);
+            vfdText (g, names[i], cell.withHeight (20.0f).translated (0.0f, 3.0f), 10.0f, Justification::centred, false, 0.7f);
+        }
+        if (livePart) vfdText (g, String::fromUTF8 (vals[i]), cell.withTrimmedTop (20.0f), i == 3 ? 12.0f : 15.0f, Justification::centred, true);
+    }
+    if (livePart) vfdGlassSheen (g, X.display.reduced (8.0f));
+}
+
+// the jog wheel: a heavy black wheel with a knurled rim, a finger dimple, and a brass hub
+static void paintJog (Graphics& g, Rectangle<float> r, float angle)
+{
+    const auto c = r.getCentre();
+    const float R = r.getWidth() * 0.5f;
+    for (int i = 1; i <= 8; ++i)
+    {
+        g.setColour (Colours::black.withAlpha (0.07f));
+        g.fillEllipse (Rectangle<float> ((R + (float) i) * 2.0f, (R + (float) i) * 2.0f).withCentre (c.translated (1.5f + i * 0.6f, 2.5f + i * 0.9f)));
+    }
+    g.setGradientFill (ColourGradient (Colour (0xff3a3a38), c.x - R, c.y - R, Colour (0xff0b0b0b), c.x + R, c.y + R, false));
+    g.fillEllipse (r);
+    for (int i = 0; i < 160; ++i)   // the knurl
+    {
+        const float a = (float) i * MathConstants<float>::twoPi / 160.0f + angle;
+        g.setColour ((i % 2 ? Colours::white : Colours::black).withAlpha (i % 2 ? 0.10f : 0.35f));
+        g.drawLine ({ c.getPointOnCircumference (R * 0.90f, a), c.getPointOnCircumference (R * 0.995f, a) }, 1.0f);
+    }
+    const float F = R * 0.86f;   // the face: satin black, spun in rings
+    g.setGradientFill (ColourGradient (Colour (0xff2a2a29), c.x - F, c.y - F, Colour (0xff121212), c.x + F, c.y + F, false));
+    g.fillEllipse (Rectangle<float> (F * 2, F * 2).withCentre (c));
+    Random rng (5150);
+    for (float rr = F * 0.2f; rr < F; rr += 1.3f)
+    {
+        g.setColour (Colours::white.withAlpha (0.012f + 0.018f * rng.nextFloat()));
+        g.drawEllipse (Rectangle<float> (rr * 2, rr * 2).withCentre (c), 0.6f);
+    }
+    g.setGradientFill (ColourGradient (Colours::white.withAlpha (0.10f), c.x - F * 0.5f, c.y - F * 0.6f, Colours::white.withAlpha (0.0f), c.x, c.y, true));
+    g.fillEllipse (Rectangle<float> (F * 2, F * 2).withCentre (c));
+    // finger dimple
+    const auto d = c.getPointOnCircumference (F * 0.62f, angle + 0.6f);
+    g.setGradientFill (ColourGradient (Colours::black.withAlpha (0.7f), d.x - 6, d.y - 6, Colour (0xff3b3b39), d.x + 8, d.y + 8, false));
+    g.fillEllipse (Rectangle<float> (34.0f, 34.0f).withCentre (d));
+    g.setColour (Colours::white.withAlpha (0.12f));
+    g.drawEllipse (Rectangle<float> (34.0f, 34.0f).withCentre (d.translated (0.5f, 0.8f)), 0.8f);
+    // brass hub
+    const float h = R * 0.16f;
+    g.setGradientFill (ColourGradient (Colour (0xfff0d998), c.x - h, c.y - h, Colour (0xff6f5422), c.x + h, c.y + h, false));
+    g.fillEllipse (Rectangle<float> (h * 2, h * 2).withCentre (c));
+    g.setColour (Colour (0xff3e2f14).withAlpha (0.8f));
+    g.drawEllipse (Rectangle<float> (h * 2, h * 2).withCentre (c), 0.8f);
+}
+
+// What never moves on the UF panel: the printed words and scales, the fader's slot, the display's frame and empty glass
+static void paintUFStatic (Graphics& g, const Layout& L, const UFExtras& X)
+{
+    const Colour cream (Palette::cream);
+    g.setColour (cream);
+    {
+        const float top = X.fader.getY(), len = X.fader.getHeight(), cx = X.fader.getCentreX();
+        auto yOf = [&] (float db) { const float p = db >= 0 ? 0.75f + db / 12.0f * 0.25f : jmax (0.0f, 0.75f + db / 60.0f * 0.75f); return top + (1.0f - p) * len; };
+        for (float db : { 12.0f, 6.0f, 0.0f, -6.0f, -12.0f, -24.0f, -36.0f, -48.0f, -60.0f })
+        {
+            const float yy = yOf (db); const bool zero = db == 0.0f;
+            g.fillRect (cx - (zero ? 46.0f : 43.0f), yy - 0.75f, zero ? 12.0f : 9.0f, 1.5f);   // clear of the larger cap
+            g.fillRect (cx + 34.0f, yy - 0.75f, zero ? 12.0f : 9.0f, 1.5f);
+            g.setFont (KintsugiFonts::serif (9.5f, zero));
+            g.drawText (db > 0 ? "+" + String ((int) db) : String ((int) db), Rectangle<float> (cx - 80.0f, yy - 6.0f, 32.0f, 12.0f), Justification::centredRight);
+        }
+        g.setFont (KintsugiFonts::serif (11.5f).withExtraKerningFactor (0.08f));
+        g.drawText ("VOLUME", Rectangle<float> (cx - 50.0f, top + len + 26.0f, 100.0f, 16.0f), Justification::centred);
+    }
+    g.setFont (KintsugiFonts::serif (11.5f).withExtraKerningFactor (0.08f));
+    g.drawText ("PAN", Rectangle<float> (X.pan.x - 50.0f, X.pan.y + 44.0f, 100.0f, 16.0f), Justification::centred);
+    g.setFont (KintsugiFonts::serif (8.5f).withExtraKerningFactor (0.04f));   // the ends of the pan scale
+    g.drawText ("L", Rectangle<float> (X.pan.x - 52.0f, X.pan.y + 22.0f, 14.0f, 12.0f), Justification::centred);
+    g.drawText ("R", Rectangle<float> (X.pan.x + 38.0f, X.pan.y + 22.0f, 14.0f, 12.0f), Justification::centred);
+    for (auto& k : L.keys)
+        if (k.brass)
+        {
+            g.setFont (KintsugiFonts::serif (10.0f).withExtraKerningFactor (0.14f));
+            g.drawText ("CONNECTIONS", Rectangle<float> (140.0f, 14.0f).withCentre ({ k.r.getCentreX(), k.r.getBottom() + 14.0f }), Justification::centred);
+        }
+    {
+        Rectangle<float> a, b;
+        for (auto& k : L.keys) { if (k.id == "trkleft") a = k.r; if (k.id == "trkright") b = k.r; }
+        g.drawText ("TRACK", Rectangle<float> (120.0f, 14.0f).withCentre ({ (a.getX() + b.getRight()) * 0.5f, a.getBottom() + 8.0f }), Justification::centred);
+    }
+
+    {
+        const float cx = X.fader.getCentreX();
+        {   // the slot, as on Console RA-1, the length of the travel
+            const auto slot = Rectangle<float> (cx - 3.0f, X.fader.getY() - 18.0f, 6.0f, X.fader.getHeight() + 36.0f);
+            g.setColour (Colours::white.withAlpha (0.14f)); g.fillRoundedRectangle (slot.translated (0.8f, 0.8f), 3.0f);
+            g.setColour (Colour (0xff050504)); g.fillRoundedRectangle (slot, 3.0f);
+            g.setColour (Colour (0xff2c2a26)); g.fillRect (slot.reduced (2.2f, 3.0f));
+        }
+    }
+    paintVFDFrame (g, X.display);
+}
+
+static constexpr float faderCapScale = 1.6f;   // the fader cap, larger than on the plugins, for a finger
+static Image composeUF (float scale)
+{
+    UFExtras X;
+    Layout L = ipadUF (X);
+    Image img = renderBackground (L, scale);
+    Graphics g (img);
+    g.addTransform (AffineTransform::scale (scale));
+    g.addTransform (AffineTransform::translation (L.plate.getX(), L.plate.getY()));
+    KintsugiLookAndFeel lnf;
+    paintUFStatic (g, L, X);
+    paintDisplays (g, X);
+    // pan and the four encoders: the suite's cream knobs
+    juce::Slider s; s.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
+    const float st = MathConstants<float>::pi * 1.25f, en = MathConstants<float>::pi * 2.75f;
+    auto knob = [&] (Point<float> c, float size, float pos) { lnf.drawCreamKnob (g, (int) (c.x - size * 0.5f), (int) (c.y - size * 0.5f), (int) size, (int) size, st + pos * (en - st), s); };
+    {
+        juce::Slider ps; ps.getProperties().set ("pointer", true); ps.getProperties().set ("creamPointer", true);
+        const float size = 92.0f;
+        lnf.drawPointerKnob (g, (int) (X.pan.x - size * 0.5f), (int) (X.pan.y - size * 0.5f), (int) size, (int) size, st + 0.42f * (en - st), ps);
+    }
+    const float encPos[4] = { 0.62f, 0.42f, 0.55f, 0.35f };
+    for (size_t i = 0; i < X.encoders.size() && i < 4; ++i) knob (X.encoders[i], 66.0f, encPos[i]);
+    // the fader, set to -4.5 dB
+    {
+        juce::Slider f; f.setSliderStyle (juce::Slider::LinearVertical); f.getProperties().set ("fader", true);
+        const float p = 0.75f - 4.5f / 60.0f * 0.75f;
+        const float yy = X.fader.getY() + (1.0f - p) * X.fader.getHeight();
+        const float cx = X.fader.getCentreX();
+        Graphics::ScopedSaveState ss (g);
+        g.addTransform (AffineTransform::scale (faderCapScale, faderCapScale, cx, yy));
+        lnf.drawLinearSlider (g, (int) X.fader.getX(), (int) yy, (int) X.fader.getWidth(), 0, yy, yy, yy, juce::Slider::LinearVertical, f);
+    }
+    if (! X.jog.isEmpty()) paintJog (g, X.jog, 0.3f);
+    for (auto& k : L.keys) paintKey (g, k, k.id == "playstop" || k.id == "cycle" || k.id == "arm");
+    for (auto& l : L.lamps)
+    {
+        Graphics::ScopedSaveState ss (g);
+        g.addTransform (AffineTransform::scale (L.linkScale, L.linkScale, l.c.x, l.c.y));
+        paintLamp (g, l.c, "green", 1.0f);
+    }
+    return img;
+}
+} // namespace Deck
+
 int main (int argc, char** argv)
 {
     ScopedJuceInitialiser_GUI gui;
@@ -829,11 +1279,17 @@ int main (int argc, char** argv)
         std::cout << "screens written to " << out.getFullPathName() << std::endl;
         return 0;
     }
+    if (mode == "uf1")   // the iPad as a one-channel control surface (mock-up)
+    {
+        savePNG (composeUF (2.0f), out.getChildFile ("Deck-RA1-iPad-UF.png"));
+        std::cout << "written" << std::endl;
+        return 0;
+    }
     if (mode == "assets")
     {
         String json = "{";
         bool first = true;
-        for (auto L : { landscape(), ipadFull() })
+        for (auto L : { landscape() })   // the iPhone; the iPad's UF panel follows below
         {
             const float scale = L.pxScale;
             auto bg = renderBackground (L, scale);
@@ -867,6 +1323,59 @@ int main (int argc, char** argv)
             }
             json << (first ? "" : ",") << "\"" << L.name << "\":" << layoutJSON (L).dropLastCharacters (1) << ",\"scale\":" << String (L.pxScale, 0) << "}";
             first = false;
+        }
+        {   // ---- the iPad: the UF panel
+            Deck::UFExtras X;
+            Deck::Layout L = Deck::ipadUF (X);
+            const float s = L.pxScale;
+            Image bg = renderBackground (L, s);
+            {
+                Graphics g (bg);
+                g.addTransform (AffineTransform::scale (s));
+                g.addTransform (AffineTransform::translation (L.plate.getX(), L.plate.getY()));
+                paintUFStatic (g, L, X);
+                paintDisplays (g, X, true, false);
+            }
+            savePNG (bg, out.getChildFile ("bg-ipad.png"));
+            for (auto& k : L.keys)
+                for (int lit = 0; lit < 2; ++lit)
+                {
+                    const float pad = keyPad (k);
+                    auto img = sprite (k.r.expanded (pad), s, [&] (Graphics& g) { paintKey (g, k, lit == 1); });
+                    savePNG (img, out.getChildFile ("key-ipad-" + k.id + (lit ? "-down" : "-up") + ".png"));
+                }
+            // the pan knob, turned through its travel: one frame per step, stacked
+            KintsugiLookAndFeel lnf;
+            const int frames = 61; const float cell = 100.0f, knobSize = 92.0f;
+            const float st = MathConstants<float>::pi * 1.25f, en = MathConstants<float>::pi * 2.75f;
+            auto strip = sprite ({ 0.0f, 0.0f, cell, cell * frames }, s, [&] (Graphics& g)
+            {
+                juce::Slider ps; ps.getProperties().set ("pointer", true); ps.getProperties().set ("creamPointer", true);
+                for (int i = 0; i < frames; ++i)
+                    lnf.drawPointerKnob (g, (int) ((cell - knobSize) * 0.5f), (int) ((float) i * cell + (cell - knobSize) * 0.5f), (int) knobSize, (int) knobSize,
+                                         st + (float) i / (float) (frames - 1) * (en - st), ps);
+            });
+            savePNG (strip, out.getChildFile ("pan-ipad.png"));
+            // the fader cap on its own, centred on (0, 0)
+            const Rectangle<float> capArea (-48.0f, -54.0f, 104.0f, 124.0f);
+            auto cap = sprite (capArea, s, [&] (Graphics& g)
+            {
+                juce::Slider f; f.setSliderStyle (juce::Slider::LinearVertical); f.getProperties().set ("fader", true);
+                g.addTransform (AffineTransform::scale (faderCapScale, faderCapScale));
+                lnf.drawLinearSlider (g, -30, 0, 60, 0, 0.0f, 0.0f, 0.0f, juce::Slider::LinearVertical, f);
+            });
+            savePNG (cap, out.getChildFile ("fadercap-ipad.png"));
+            // the glass's sheen, laid over the live display
+            const auto glass = X.display.reduced (8.0f);
+            auto sheen = sprite ({ 0.0f, 0.0f, glass.getWidth(), glass.getHeight() }, s, [&] (Graphics& g) { vfdGlassSheen (g, { 0.0f, 0.0f, glass.getWidth(), glass.getHeight() }); });
+            savePNG (sheen, out.getChildFile ("sheen-ipad.png"));
+            auto num = [] (float v) { return String (v, 2); };
+            json << ",\"ipad\":" << layoutJSON (L).dropLastCharacters (1)
+                 << ",\"scale\":" << String (s, 0)
+                 << ",\"fader\":[" << num (X.fader.getX()) << "," << num (X.fader.getY()) << "," << num (X.fader.getWidth()) << "," << num (X.fader.getHeight()) << "]"
+                 << ",\"faderCap\":[" << num (capArea.getX()) << "," << num (capArea.getY()) << "," << num (capArea.getWidth()) << "," << num (capArea.getHeight()) << "]"
+                 << ",\"pan\":[" << num (X.pan.x) << "," << num (X.pan.y) << "," << num (cell) << "," << frames << "]"
+                 << ",\"display\":[" << num (glass.getX()) << "," << num (glass.getY()) << "," << num (glass.getWidth()) << "," << num (glass.getHeight()) << "]}";
         }
         for (auto c : { "amber", "red", "green" })
             for (int lit = 0; lit < 2; ++lit)
