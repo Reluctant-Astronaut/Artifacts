@@ -1155,15 +1155,19 @@ static void paintJog (Graphics& g, Rectangle<float> r, float angle)
 }
 
 // What never moves on the UF panel: the printed words and scales, the fader's slot, the display's frame and empty glass
-static void paintUFStatic (Graphics& g, const Layout& L, const UFExtras& X)
+// withScale: the fader's dB marks. The app draws them itself, where Cubase really puts each level (it learns the curve),
+// so the plate it is given has none; the mock-ups print them at the app's first guess.
+static void paintUFStatic (Graphics& g, const Layout& L, const UFExtras& X, bool withScale = true)
 {
     const Colour cream (Palette::cream);
     g.setColour (cream);
     {
         const float top = X.fader.getY(), len = X.fader.getHeight(), cx = X.fader.getCentreX();
-        auto yOf = [&] (float db) { const float p = db >= 0 ? 0.75f + db / 12.0f * 0.25f : jmax (0.0f, 0.75f + db / 60.0f * 0.75f); return top + (1.0f - p) * len; };
-        for (float db : { 12.0f, 6.0f, 0.0f, -6.0f, -12.0f, -24.0f, -36.0f, -48.0f, -60.0f })
+        // the app's first guess at Cubase's curve, before it has learned it (the same formula as faderGuess in index.html)
+        auto yOf = [&] (float db) { const float p = db >= 0 ? 0.77f + db / 6.0f * 0.23f : 0.77f * std::pow (jmax (0.0f, (db + 72.0f) / 72.0f), 1.6f); return top + (1.0f - p) * len; };
+        for (float db : { 6.0f, 0.0f, -6.0f, -12.0f, -24.0f, -36.0f, -48.0f, -60.0f })
         {
+            if (! withScale) break;
             const float yy = yOf (db); const bool zero = db == 0.0f;
             g.fillRect (cx - (zero ? 46.0f : 43.0f), yy - 0.75f, zero ? 12.0f : 9.0f, 1.5f);   // clear of the larger cap
             g.fillRect (cx + 34.0f, yy - 0.75f, zero ? 12.0f : 9.0f, 1.5f);
@@ -1333,7 +1337,7 @@ int main (int argc, char** argv)
                 Graphics g (bg);
                 g.addTransform (AffineTransform::scale (s));
                 g.addTransform (AffineTransform::translation (L.plate.getX(), L.plate.getY()));
-                paintUFStatic (g, L, X);
+                paintUFStatic (g, L, X, false);
                 paintDisplays (g, X, true, false);
             }
             savePNG (bg, out.getChildFile ("bg-ipad.png"));
