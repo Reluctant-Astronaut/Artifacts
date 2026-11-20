@@ -1081,17 +1081,21 @@ static void paintDisplays (Graphics& g, const UFExtras& X, bool staticPart = tru
         {
             const float sx = gl.getX() + 18.0f + (mw - 18.0f) * (float) s / (float) segs;
             const bool on = livePart && (float) s / (float) segs < level;
-            const bool hot = s >= segs - 6;
+            // -60 .. 0 dB: amber, yellow from -12 dB, red from -3 dB (the same as the app's live meter)
+            const float segDb = -60.0f + 60.0f * (float) s / (float) segs;
+            const Colour segColour = segDb >= -3.0f ? Colour (0xffff5a3a) : segDb >= -12.0f ? Colour (0xffffe25c) : amber;
             if (on ? ! livePart : ! staticPart) continue;
-            g.setColour ((hot ? Colour (0xffff5a3a) : amber).withAlpha (on ? 0.9f : 0.10f));
+            g.setColour (segColour.withAlpha (on ? 0.9f : 0.10f));
             g.fillRect (sx, y, (mw - 18.0f) / (float) segs - 2.0f, 8.0f);
         }
     }
-    if (staticPart)   // the scale under the segments: each mark where its level lights (-60 dB at the left end, +6 at the right)
-        for (int db : { -40, -20, -10, -6, -3, 0 })
+    if (staticPart)   // the scale under the segments: each mark where its level lights (-60 dB at the left end, 0 at the right)
+        for (int db : { -40, -30, -20, -12, -6, -3, 0 })
         {
-            const float f = ((float) db + 60.0f) / 66.0f, sx = gl.getX() + 18.0f + (mw - 18.0f) * f;
-            vfdText (g, String (db), { sx - 20.0f, my + 26.0f, 40.0f, 12.0f }, 8.5f, Justification::centred, false, 0.45f);
+            const float f = ((float) db + 60.0f) / 60.0f, sx = gl.getX() + 18.0f + (mw - 18.0f) * f;
+            const Rectangle<float> r (sx - 20.0f, my + 26.0f, 40.0f, 12.0f);
+            if (db == 0) vfdText (g, "0", r.withRightX (gl.getRight() - 2.0f).withX (gl.getRight() - 42.0f), 8.5f, Justification::centredRight, false, 0.45f);
+            else vfdText (g, String (db), r, 8.5f, Justification::centred, false, 0.45f);
         }
     // the four encoders' parameters: names and values, each over its knob
     const char* names[5] = { "VOLUME", "PAN", "SENDS", "CHANNEL", "TRACK" };
