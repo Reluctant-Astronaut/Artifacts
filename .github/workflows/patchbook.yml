@@ -1,0 +1,49 @@
+name: Build Patch Book
+
+# Lives only on the patch-book branch, so it never runs for the plug-in builds on main.
+on:
+  push:
+    branches: [patch-book]
+  workflow_dispatch:
+
+permissions:
+  contents: write   # to publish the releases the Patch Book Button installs from
+
+jobs:
+  mac:
+    runs-on: macos-15-intel   # same runner as the Artifacts plug-ins; builds Apple Silicon + Intel in one app
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Build Patch Book
+        run: |
+          set -o pipefail
+          bash build.sh 2>&1 | tee build.log
+
+      - name: Publish the build log (also when the build fails)
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          [ -f build.log ] || echo "no log" > build.log
+          gh release delete patchbook-log --yes --cleanup-tag || true
+          gh release create patchbook-log --target "$GITHUB_SHA" --latest=false --prerelease \
+            --title "Patch Book - build log" --notes "Log of the latest Patch Book build ($(git rev-parse --short HEAD))." build.log
+
+      - name: Package the app and the Patch Book Button
+        run: |
+          mkdir -p out
+          (cd build && ditto -c -k --keepParent "Patch Book.app" ../out/PatchBook.zip)
+          PATCHBOOK_REPO="${{ github.repository }}" bash tools/PatchBookButton/build-app.sh out
+          (cd out && ditto -c -k --keepParent "Patch Book Button.app" Patch-Book-Button.zip)
+          printf 'commit %s\n%s\n' "$(git rev-parse --short HEAD)" "$(date -u '+%Y-%m-%d %H:%M UTC')" > out/build-info.txt
+
+      - name: Publish the latest build (what the Patch Book Button installs)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete patchbook-latest --yes --cleanup-tag || true
+          gh release create patchbook-latest --target "$GITHUB_SHA" --latest=false \
+            --title "Patch Book - latest build" \
+            --notes "Built from $(git rev-parse --short HEAD). Press the Patch Book Button to install it." \
+            out/PatchBook.zip out/Patch-Book-Button.zip out/build-info.txt
