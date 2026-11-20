@@ -989,9 +989,16 @@ static Layout ipadUF (UFExtras& X)
         b.brass = true;
         L.keys.push_back (b);
     }
-    {   // PLAY / STOP: one long key below everything, like a space bar, with the maker's name on it
+    {   // ZOOM IN / OUT on the grid's first two columns, then PLAY / STOP: one long key, like a space bar, with the maker's name on it
+        float x = rx;
+        for (auto id : { "zin", "zout" })
+        {
+            const auto ki = info (id);
+            L.keys.push_back ({ id, ki.cc, ki.label, "", { x, gBar, u, gBarH }, false });
+            x += u + gap;
+        }
         const auto ki = info ("playstop");
-        L.keys.push_back ({ "playstop", ki.cc, String::fromUTF8 (ki.label), ki.icon, { rx, gBar, rw, gBarH }, true });
+        L.keys.push_back ({ "playstop", ki.cc, String::fromUTF8 (ki.label), ki.icon, { x, gBar, rx + rw - x, gBarH }, true });
     }
     // all keys in the same red (MIXER too)
     X.jog = {};
