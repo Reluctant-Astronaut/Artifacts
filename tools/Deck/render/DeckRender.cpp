@@ -1094,11 +1094,11 @@ static void paintDisplays (Graphics& g, const UFExtras& X, bool staticPart = tru
             vfdText (g, String (db), { sx - 20.0f, my + 26.0f, 40.0f, 12.0f }, 8.5f, Justification::centred, false, 0.45f);
         }
     // the four encoders' parameters: names and values, each over its knob
-    const char* names[4] = { "VOLUME", "PAN", "SEND 1", "TRACK" };
-    const char* vals[4] = { "-4.5 dB", "L 12", "-12.0 dB", "ARM  \xc2\xb7  MON" };
-    for (int i = 0; i < 4; ++i)
+    const char* names[5] = { "VOLUME", "PAN", "SENDS", "CHANNEL", "TRACK" };
+    const char* vals[5] = { "-4.5 dB", "L 12", "1 2 3 4 5 6 7 8", "STEREO", "ARM  \xc2\xb7  MON" };
+    for (int i = 0; i < 5; ++i)
     {
-        const float cw = gl.getWidth() / 4.0f;   // four cells across the glass, inside its edges
+        const float cw = gl.getWidth() / 5.0f;   // five cells across the glass, inside its edges
         const Rectangle<float> cell (gl.getX() + cw * (float) i + 5.0f, gl.getBottom() - 46.0f, cw - 10.0f, 46.0f);
         if (staticPart)
         {
@@ -1106,7 +1106,7 @@ static void paintDisplays (Graphics& g, const UFExtras& X, bool staticPart = tru
             g.drawRoundedRectangle (cell, 3.0f, 0.8f);
             vfdText (g, names[i], cell.withHeight (20.0f).translated (0.0f, 3.0f), 10.0f, Justification::centred, false, 0.7f);
         }
-        if (livePart) vfdText (g, String::fromUTF8 (vals[i]), cell.withTrimmedTop (20.0f), i == 3 ? 12.0f : 15.0f, Justification::centred, true);
+        if (livePart) vfdText (g, String::fromUTF8 (vals[i]), cell.withTrimmedTop (20.0f), i >= 2 ? 12.0f : 15.0f, Justification::centred, true);
     }
     if (livePart) vfdGlassSheen (g, X.display.reduced (8.0f));
 }
