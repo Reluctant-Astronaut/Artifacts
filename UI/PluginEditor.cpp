@@ -231,8 +231,9 @@ void KintsugiLookAndFeel::drawPointerKnob (juce::Graphics& g, int x, int y, int 
     const auto c = Rectangle<int> (x, y, w, h).toFloat().getCentre();
     const float R = jmin (w, h) * 0.5f * 0.88f;
     const bool brassP = (bool) s.getProperties()["brassPointer"];
-    const Colour bodyDark  = brassP ? Colour (0xff4a3714) : Colour (0xff2a0705);
-    const Colour bodyLight = brassP ? Colour (0xffe9cf86) : Colour (0xff9b3328);
+    const bool creamP = (bool) s.getProperties()["creamPointer"];   // the cream of the suite's dials (Deck RA-1's pan)
+    const Colour bodyDark  = brassP ? Colour (0xff4a3714) : creamP ? Colour (0xffa8966c) : Colour (0xff2a0705);
+    const Colour bodyLight = brassP ? Colour (0xffe9cf86) : creamP ? Colour (0xfff8f2de) : Colour (0xff9b3328);
     const auto rot = AffineTransform::rotation (angle, c.x, c.y);   // knob space points straight up
     auto litFill = [&] (Rectangle<float> r, float lift)            // lit from the upper left whatever the rotation
     {
@@ -285,7 +286,7 @@ void KintsugiLookAndFeel::drawPointerKnob (juce::Graphics& g, int x, int y, int 
     tri.lineTo (c.x + R * 0.15f, c.y - R * 0.54f);
     tri.lineTo (c.x - R * 0.15f, c.y - R * 0.54f);
     tri.closeSubPath();
-    g.setColour (brassP ? Colour (0xff1a1409) : Palette::cream);
+    g.setColour (brassP || creamP ? Colour (0xff1a1409) : Palette::cream);
     g.strokePath (tri, PathStrokeType (1.5f, PathStrokeType::mitered), rot);
 
     // ---- grip block behind (tallest part) ----
@@ -3035,7 +3036,7 @@ ArtifactsEditor::ArtifactsEditor (ArtifactsProcessor& p)
             k.readout.setVisible (false);
         };
         asSwitch (*wow, "Frequency", { "0.2", "0.3", "0.5", "0.7", "1" }, 0.42f);
-        asSwitch (*flutter, "Frequency", { "0.2", "0.3", "0.5", "0.7", "1", "1.5", "2", "3", "4", "5" }, 0.60f);
+        asSwitch (*flutter, "Frequency", { "0.2", "0.3", "0.5", "0.7", "1", "1.5", "2", "3", "4", "5", "7" }, 0.62f);
         asSwitch (*wear, "Frequency", { "1.5", "2", "3", "4", "5" }, 0.42f);
         for (auto* k : { glue, tone, vMix }) { k->marks.clear(); k->alwaysShowValue = false; }
         for (auto* k : { iron, speed }) k->readout.setVisible (false);

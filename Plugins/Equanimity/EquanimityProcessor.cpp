@@ -51,7 +51,7 @@ AudioProcessorValueTreeState::ParameterLayout EquanimityProcessor::createLayout(
         // Midrange (MEQ-5): low peak, dip, high peak
         choice2 ("mlfreq", "Mid Low Frequency", { "200 Hz", "300 Hz", "500 Hz", "700 Hz", "1 kHz" }, 2);
         dial2 ("mlpeak", "Mid Low Peak", 0.0f);
-        choice2 ("mdfreq", "Mid Dip Frequency", { "200 Hz", "300 Hz", "500 Hz", "700 Hz", "1 kHz", "1.5 kHz", "2 kHz", "3 kHz", "4 kHz", "5 kHz" }, 4);
+        choice2 ("mdfreq", "Mid Dip Frequency", { "200 Hz", "300 Hz", "500 Hz", "700 Hz", "1 kHz", "1.5 kHz", "2 kHz", "3 kHz", "4 kHz", "5 kHz", "7 kHz" }, 4);
         dial2 ("mdip", "Mid Dip", 0.0f);
         choice2 ("mhfreq", "Mid High Frequency", { "1.5 kHz", "2 kHz", "3 kHz", "4 kHz", "5 kHz" }, 2);
         dial2 ("mhpeak", "Mid High Peak", 0.0f);
@@ -70,12 +70,13 @@ AudioProcessorValueTreeState::ParameterLayout EquanimityProcessor::createLayout(
 
 
 // Triode curve, slope 1 at the origin. k sets how hard the signal drives it, b how lopsided (even harmonics) it sits.
-static inline float triode (float x, float k, float b)
+// In double precision throughout: the curve is used very gently, and float would leave a grain of rounding noise on quiet signals.
+static inline double triode (double x, double k, double b)
 {
-    const float t0 = analog::fastTanh (b), slope = 1.0f - t0 * t0;
-    return (analog::fastTanh (k * x + b) - t0) / (k * slope);
+    const double t0 = std::tanh (b), slope = 1.0 - t0 * t0;
+    return (std::tanh (k * x + b) - t0) / (k * slope);
 }
-static inline float satLow (float l) { return analog::fastTanh (0.3f * l) / 0.3f; }   // gentle: boosted bass thickens, isn't crushed
+static inline double satLow (double l) { return std::tanh (0.3 * l) / 0.3; }   // gentle: boosted bass thickens, isn't crushed
 
 EquanimityProcessor::EquanimityProcessor()
     : ArtifactsProcessor (BusesProperties()
@@ -105,7 +106,7 @@ bool EquanimityProcessor::isBusesLayoutSupported (const BusesLayout& layouts) co
 double EquanimityProcessor::loFreqHz (int i)  { static const double f[] { 20, 30, 60, 100 }; return f[jlimit (0, 3, i)]; }
 double EquanimityProcessor::hiFreqHz (int i)  { static const double f[] { 3000, 4000, 5000, 6000, 8000, 10000, 12000, 16000 }; return f[jlimit (0, 7, i)]; }
 double EquanimityProcessor::mLoHz (int i)  { static const double f[] { 200, 300, 500, 700, 1000 }; return f[jlimit (0, 4, i)]; }
-double EquanimityProcessor::mDipHz (int i) { static const double f[] { 200, 300, 500, 700, 1000, 1500, 2000, 3000, 4000, 5000 }; return f[jlimit (0, 9, i)]; }
+double EquanimityProcessor::mDipHz (int i) { static const double f[] { 200, 300, 500, 700, 1000, 1500, 2000, 3000, 4000, 5000, 7000 }; return f[jlimit (0, 10, i)]; }
 double EquanimityProcessor::mHiHz (int i)  { static const double f[] { 1500, 2000, 3000, 4000, 5000 }; return f[jlimit (0, 4, i)]; }
 double EquanimityProcessor::attSelHz (int i)  { static const double f[] { 5000, 10000, 20000 }; return f[jlimit (0, 2, i)]; }
 
@@ -123,22 +124,24 @@ static double attenTaper (double v) { return std::pow (jlimit (0.0, 10.0, v) / 1
 
 void EquanimityProcessor::designEq (EqChannel& e, const Settings& s) const
 {
-    const double nyq = 0.45 * sr;
+    // designed at the 4x rate the whole unit runs at: the curves keep their analog shapes right up to 20 kHz
+    // (at the base rate, peaks and shelves near the top would be squeezed narrower and harder than the hardware's)
+    const double fsr = sr * 4.0, nyq = 0.45 * sr;
     auto shelfLow = [&] (Biquad& b, double f, double dB, double Q)
     {
-        const double A = std::pow (10.0, dB / 40.0), w = MathConstants<double>::twoPi * jmin (f, nyq) / sr, cs = std::cos (w), al = std::sin (w) / (2 * Q), r = 2 * std::sqrt (A) * al;
+        const double A = std::pow (10.0, dB / 40.0), w = MathConstants<double>::twoPi * jmin (f, nyq) / fsr, cs = std::cos (w), al = std::sin (w) / (2 * Q), r = 2 * std::sqrt (A) * al;
         b.set (A * ((A + 1) - (A - 1) * cs + r), 2 * A * ((A - 1) - (A + 1) * cs), A * ((A + 1) - (A - 1) * cs - r),
                (A + 1) + (A - 1) * cs + r, -2 * ((A - 1) + (A + 1) * cs), (A + 1) + (A - 1) * cs - r);
     };
     auto shelfHigh = [&] (Biquad& b, double f, double dB, double Q)
     {
-        const double A = std::pow (10.0, dB / 40.0), w = MathConstants<double>::twoPi * jmin (f, nyq) / sr, cs = std::cos (w), al = std::sin (w) / (2 * Q), r = 2 * std::sqrt (A) * al;
+        const double A = std::pow (10.0, dB / 40.0), w = MathConstants<double>::twoPi * jmin (f, nyq) / fsr, cs = std::cos (w), al = std::sin (w) / (2 * Q), r = 2 * std::sqrt (A) * al;
         b.set (A * ((A + 1) + (A - 1) * cs + r), -2 * A * ((A - 1) + (A + 1) * cs), A * ((A + 1) + (A - 1) * cs - r),
                (A + 1) - (A - 1) * cs + r, 2 * ((A - 1) - (A + 1) * cs), (A + 1) - (A - 1) * cs - r);
     };
     auto peak = [&] (Biquad& b, double f, double dB, double Q)
     {
-        const double A = std::pow (10.0, dB / 40.0), w = MathConstants<double>::twoPi * jmin (f, nyq) / sr, cs = std::cos (w), al = std::sin (w) / (2 * Q);
+        const double A = std::pow (10.0, dB / 40.0), w = MathConstants<double>::twoPi * jmin (f, nyq) / fsr, cs = std::cos (w), al = std::sin (w) / (2 * Q);
         b.set (1 + al * A, -2 * cs, 1 - al * A, 1 + al / A, -2 * cs, 1 - al / A);
     };
     const double fl = s.hz[0];
@@ -148,10 +151,13 @@ void EquanimityProcessor::designEq (EqChannel& e, const Settings& s) const
     // bandwidth: sharp (0) is a narrow peak of up to +18 dB, broad (10) a wide one of up to +9 dB
     const double q = 2.5 * std::pow (0.45 / 2.5, s.bw / 10.0);                       // 2.5 ... 0.45
     peak (e.hiPeak, s.hz[1], (18.0 - 9.0 * s.bw / 10.0) * boostTaper (s.hiBoost), q);
-    // MEQ-5 midrange: broad peaks (up to +10 dB) either side of a dip (up to -10 dB)
-    peak (e.mLo,  s.hz[3],   10.0 * s.mLoPk / 10.0,  0.70);
-    peak (e.mDip, s.hz[4], -10.0 * s.mDip / 10.0,  0.85);
-    peak (e.mHi,  s.hz[5],   10.0 * s.mHiPk / 10.0,  0.80);
+    // MEQ-5 midrange (its published ranges): low peak up to +10 dB, dip up to -10 dB (200 Hz - 7 kHz), high peak up to +8 dB.
+    // Audio-taper dials like the EQP-1A's, and the passive network's way with bandwidth: a gentle setting is a wide, soft lift;
+    // turned up, the curve also tightens round its frequency
+    const double tl = boostTaper (s.mLoPk), td = attenTaper (s.mDip), th = boostTaper (s.mHiPk);
+    peak (e.mLo,  s.hz[3],  10.0 * tl, 0.45 + 0.45 * tl);    // Q 0.45 ... 0.9
+    peak (e.mDip, s.hz[4], -10.0 * td, 0.60 + 0.60 * td);    // Q 0.6 ... 1.2
+    peak (e.mHi,  s.hz[5],   8.0 * th, 0.45 + 0.45 * th);
     shelfHigh (e.hiAtten, s.hz[2] * 0.35, -16.5 * attenTaper (s.hiAtten), 0.55);   // most of the cut at the frequency chosen
 }
 
@@ -172,7 +178,7 @@ double EquanimityProcessor::loudnessComp (const EqChannel& e) const
     double acc = 0, wsum = 0;
     for (int i = 0; i < N; ++i)
     {
-        const double f = 20.0 * std::pow (20000.0 / 20.0, (double) i / (N - 1)), w = MathConstants<double>::twoPi * f / sr;
+        const double f = 20.0 * std::pow (20000.0 / 20.0, (double) i / (N - 1)), w = MathConstants<double>::twoPi * f / (sr * 4.0);
         const double p = e.loBoost.mag2 (w) * e.loAtten.mag2 (w) * e.mLo.mag2 (w) * e.mDip.mag2 (w) * e.mHi.mag2 (w) * e.hiPeak.mag2 (w) * e.hiAtten.mag2 (w);
         const double weight = kWeight2 (f);
         acc += weight * p;
@@ -228,87 +234,84 @@ void EquanimityProcessor::processBlock (AudioBuffer<float>& buffer, MidiBuffer&)
     load (bankB, tgt[1]);
 
     float peak = 0.0f, ins[2] { 0.0f, 0.0f };
-    const float glide = 1.0f - std::exp (-32.0f / (0.02f * (float) sr));
-    const float hzGlide = 1.0f - std::exp (-32.0f / (0.03f * (float) sr));
     auto* L = buffer.getWritePointer (0);
     auto* R = buffer.getWritePointer (1);
+    for (int i = 0; i < n; ++i) { ins[0] += L[i] * L[i]; ins[1] += R[i] * R[i]; }
 
-    for (int start = 0; start < n; start += 32)
+    // ---- the whole unit runs at 4x: the passive network (M/S, the EQ), then the valve make-up stage and the transformers.
+    //      12AX7 gain stage into the 12AU7 output stage, a 6X4 supply that gives a little under load.
+    const double osRate = sr * 4.0;
+    constexpr int step = 128;                                                // the dials move every 128 samples at 4x (32 at the base rate)
+    const double glide = 1.0 - std::exp (-(double) step / (0.02 * osRate));
+    const double hzGlide = 1.0 - std::exp (-(double) step / (0.03 * osRate));
+    const double aAtt = 1.0 - std::exp (-1.0 / (0.030 * osRate)), aRel = 1.0 - std::exp (-1.0 / (0.300 * osRate));
+    const double aDc = MathConstants<double>::twoPi * 3.0 / osRate, aLow = MathConstants<double>::twoPi * 70.0 / osRate;
+    const double aTop = 1.0 - std::exp (-MathConstants<double>::twoPi * 60000.0 / osRate);   // output transformer: a gentle roll-off far above (-0.5 dB at 20 kHz)
+    double envMax = 0.0;
+    for (int off = 0; off < n; off += maxBlock)
     {
-        const int len = jmin (32, n - start);
-        // dials glide, stepped selectors jump (as the switches do)
-        for (int c = 0; c < 2; ++c)
+        const int len = jmin (maxBlock, n - off);
+        float* chans[2] { L + off, R + off };
+        dsp::AudioBlock<float> blk (chans, 2, (size_t) len);
+        auto up = oversampling.processSamplesUp (blk);
+        const int m = (int) up.getNumSamples();
+        auto* X0 = up.getChannelPointer (0);
+        auto* X1 = up.getChannelPointer (1);
+        for (int start = 0; start < m; start += step)
         {
-            auto& cs = cur[c]; const auto& t = tgt[c];
-            cs.loBoost += (t.loBoost - cs.loBoost) * glide; cs.loAtten += (t.loAtten - cs.loAtten) * glide;
-            cs.hiBoost += (t.hiBoost - cs.hiBoost) * glide; cs.bw += (t.bw - cs.bw) * glide; cs.hiAtten += (t.hiAtten - cs.hiAtten) * glide;
-            cs.mLoPk += (t.mLoPk - cs.mLoPk) * glide; cs.mDip += (t.mDip - cs.mDip) * glide; cs.mHiPk += (t.mHiPk - cs.mHiPk) * glide;
-            cs.mLoFreq = t.mLoFreq; cs.mDipFreq = t.mDipFreq; cs.mHiFreq = t.mHiFreq;
-            cs.loFreq = t.loFreq; cs.hiFreq = t.hiFreq; cs.attSel = t.attSel;
-            for (int k = 0; k < 6; ++k)   // the frequencies glide, on a log scale
-                cs.hz[k] = std::exp (std::log (cs.hz[k]) + (std::log (t.hz[k]) - std::log (cs.hz[k])) * (double) hzGlide);
-            designEq (eq[c], cs);
-            const double target = autoOn ? loudnessComp (eq[c]) : 1.0;
-            eq[c].autoGain += (target - eq[c].autoGain) * 0.25;   // the level follows the dials, not the other way round
-        }
-        for (int i = start; i < start + len; ++i)
-        {
-            ins[0] += L[i] * L[i]; ins[1] += R[i] * R[i];
-            double a = L[i], b = R[i];
-            if (ms) { const double m = 0.5 * (a + b), s = 0.5 * (a - b); a = m; b = s; }
-            if (eqIn)
-            {
-                a = eq[0].hiAtten.tick (eq[0].hiPeak.tick (eq[0].mHi.tick (eq[0].mDip.tick (eq[0].mLo.tick (eq[0].loAtten.tick (eq[0].loBoost.tick (a))))))) * eq[0].autoGain;
-                b = eq[1].hiAtten.tick (eq[1].hiPeak.tick (eq[1].mHi.tick (eq[1].mDip.tick (eq[1].mLo.tick (eq[1].loAtten.tick (eq[1].loBoost.tick (b))))))) * eq[1].autoGain;
-            }
-            if (solo) { const double v = soloSide ? b : a; a = b = v; }
-            else if (ms) { const double l = a + b, r = a - b; a = l; b = r; }
-            L[i] = (float) a; R[i] = (float) b;
-        }
-    }
-
-    // ---- the valve stage and the transformers, at 4x: 12AX7 gain stage into the 12AU7 output stage, 6X4 supply that sags
-    {
-        const double osRate = sr * 4.0;
-        const float aAtt = (float) (1.0 - std::exp (-1.0 / (0.010 * osRate))), aRel = (float) (1.0 - std::exp (-1.0 / (0.250 * osRate)));
-        const float aDc = (float) (MathConstants<double>::twoPi * 3.0 / osRate), aLow = (float) (MathConstants<double>::twoPi * 70.0 / osRate);
-        float envMax = 0.0f;
-        for (int off = 0; off < n; off += maxBlock)
-        {
-            const int len = jmin (maxBlock, n - off);
-            float* chans[2] { L + off, R + off };
-            dsp::AudioBlock<float> blk (chans, 2, (size_t) len);
-            auto up = oversampling.processSamplesUp (blk);
-            const int m = (int) up.getNumSamples();
+            // dials glide, stepped selectors jump (as the switches do) while the filters glide to the new frequency
             for (int c = 0; c < 2; ++c)
             {
-                auto* x = up.getChannelPointer ((size_t) c);
-                auto& v = valve[c];
-                float env = (float) v.env, dc = (float) v.dc, dc2 = (float) v.dc2, low = (float) v.lowband;
-                for (int i = 0; i < m; ++i)
-                {
-                    float s = x[i];
-                    dc += aDc * (s - dc); s -= dc;                                   // input transformer: no DC, nothing below a few Hz
-                    const float a = std::abs (s);
-                    env += (a - env) * (a > env ? aAtt : aRel);                      // 6X4: the supply sags under load
-                    const float sag = 1.0f + 0.8f * env;
-                    // 12AX7: biased well off centre, so it bends one way more than the other: the 2nd harmonic leads,
-                    // the 3rd stays below it at any level, and a soft tail of higher ones follows as it is pushed
-                    s = triode (s, 0.09f * sag, 0.45f);
-                    s = triode (s, 0.15f * sag, -0.05f);                             // 12AU7: plenty of headroom, a little odd order when driven
-                    low += aLow * (s - low);                                          // output transformer: the iron gives in first at the bottom
-                    s += satLow (low) - low;
-                    dc2 += aDc * (s - dc2); s -= dc2;                                 // output transformer: no DC out
-                    x[i] = s;
-                }
-                v.env = env; v.dc = dc; v.dc2 = dc2; v.lowband = low;
-                envMax = jmax (envMax, env);
+                auto& cs = cur[c]; const auto& t = tgt[c];
+                cs.loBoost += (float) ((t.loBoost - cs.loBoost) * glide); cs.loAtten += (float) ((t.loAtten - cs.loAtten) * glide);
+                cs.hiBoost += (float) ((t.hiBoost - cs.hiBoost) * glide); cs.bw += (float) ((t.bw - cs.bw) * glide); cs.hiAtten += (float) ((t.hiAtten - cs.hiAtten) * glide);
+                cs.mLoPk += (float) ((t.mLoPk - cs.mLoPk) * glide); cs.mDip += (float) ((t.mDip - cs.mDip) * glide); cs.mHiPk += (float) ((t.mHiPk - cs.mHiPk) * glide);
+                cs.mLoFreq = t.mLoFreq; cs.mDipFreq = t.mDipFreq; cs.mHiFreq = t.mHiFreq;
+                cs.loFreq = t.loFreq; cs.hiFreq = t.hiFreq; cs.attSel = t.attSel;
+                for (int k = 0; k < 6; ++k)   // the frequencies glide, on a log scale
+                    cs.hz[k] = std::exp (std::log (cs.hz[k]) + (std::log (t.hz[k]) - std::log (cs.hz[k])) * hzGlide);
+                designEq (eq[c], cs);
+                const double target = autoOn ? loudnessComp (eq[c]) : 1.0;
+                eq[c].autoGain += (target - eq[c].autoGain) * 0.25;   // the level follows the dials, not the other way round
             }
-            oversampling.processSamplesDown (blk);
+            const int end = jmin (m, start + step);
+            for (int i = start; i < end; ++i)
+            {
+                double a = X0[i], b = X1[i];
+                if (ms) { const double mm = 0.5 * (a + b), ss = 0.5 * (a - b); a = mm; b = ss; }
+                if (eqIn)
+                {
+                    a = eq[0].hiAtten.tick (eq[0].hiPeak.tick (eq[0].mHi.tick (eq[0].mDip.tick (eq[0].mLo.tick (eq[0].loAtten.tick (eq[0].loBoost.tick (a))))))) * eq[0].autoGain;
+                    b = eq[1].hiAtten.tick (eq[1].hiPeak.tick (eq[1].mHi.tick (eq[1].mDip.tick (eq[1].mLo.tick (eq[1].loAtten.tick (eq[1].loBoost.tick (b))))))) * eq[1].autoGain;
+                }
+                if (solo) { const double v = soloSide ? b : a; a = b = v; }
+                else if (ms) { const double l = a + b, r = a - b; a = l; b = r; }
+                double* io[2] { &a, &b };
+                for (int c = 0; c < 2; ++c)
+                {
+                    auto& v = valve[c];
+                    double s = *io[c];
+                    v.dc += aDc * (s - v.dc); s -= v.dc;                                   // input transformer: no DC, nothing below a few Hz
+                    const double ab = std::abs (s);
+                    v.env += (ab - v.env) * (ab > v.env ? aAtt : aRel);                    // 6X4: the supply gives a little under load
+                    const double sag = 1.0 + 0.15 * v.env;
+                    // 12AX7: biased off centre, so the 2nd harmonic leads and the 3rd stays well below it at any level
+                    s = triode (s, 0.055 * sag, 0.45);
+                    s = triode (s, 0.12 * sag, -0.05);                                    // 12AU7: plenty of headroom, a little odd order when driven
+                    v.lowband += aLow * (s - v.lowband);                                    // output transformer: the iron gives in first at the bottom
+                    s += satLow (v.lowband) - v.lowband;
+                    v.top += aTop * (s - v.top); s = v.top;                                 // ... and rolls off gently far above
+                    v.dc2 += aDc * (s - v.dc2); s -= v.dc2;                                 // no DC out
+                    *io[c] = s;
+                    envMax = jmax (envMax, v.env);
+                }
+                X0[i] = (float) a; X1[i] = (float) b;
+            }
         }
-        heat += (jlimit (0.0f, 1.0f, envMax * 2.0f) - heat) * 0.3f;
-        valveHeat = heat;
+        oversampling.processSamplesDown (blk);
     }
+    heat += ((float) jlimit (0.0, 1.0, envMax * 2.0) - heat) * 0.3f;
+    valveHeat = heat;
 
     // ---- output level
     sOut.setTargetValue (Decibels::decibelsToGain (pOutput->load()));

@@ -84,7 +84,7 @@ private:
     double loudnessComp (const EqChannel&) const;
 
     // The valve stage (per channel, at 4x)
-    struct Valve { double dc = 0, dc2 = 0, lowband = 0, env = 0; };
+    struct Valve { double dc = 0, dc2 = 0, lowband = 0, env = 0, top = 0; };
 
     double sr = 48000.0;
     int maxBlock = 512;
@@ -95,7 +95,7 @@ private:
     EqChannel eq[2];
     Settings cur[2], tgt[2];
     Valve valve[2];
-    juce::dsp::Oversampling<float> oversampling { 2, 2, juce::dsp::Oversampling<float>::filterHalfBandFIREquiripple, true, false };
+    juce::dsp::Oversampling<float> oversampling { 2, 2, juce::dsp::Oversampling<float>::filterHalfBandPolyphaseIIR, true, false };   // minimum phase, as analog: no pre-ringing
     float heat = 0.0f;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (EquanimityProcessor)

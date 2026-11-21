@@ -1008,9 +1008,9 @@ static void testEquanimity (double sr)
     for (double f : { 100.0, 1000.0, 5000.0 })
     {
         Rig r (sr); r.set ("eqin", 0);
-        // warmth: more than the original's 0.15 %, on purpose, but still clean: 0.15 - 0.4 % at a typical -18 dBFS
+        // warmth, but smooth: about 0.1 % at a typical -18 dBFS (the original's spec is 0.15 % at +10 dBm, i.e. -12 dBFS)
         const double t18 = thdPct (r, f, 0.1259f);
-        row ("thd", String ((int) f) + "Hz_-18dBFS_pct", t18, t18 > 0.15 && t18 < 0.4 ? "PASS" : "FAIL");
+        row ("thd", String ((int) f) + "Hz_-18dBFS_pct", t18, t18 > 0.06 && t18 < 0.25 ? "PASS" : "FAIL");
         const double t12 = thdPct (r, f, 0.2512f);
         row ("thd", String ((int) f) + "Hz_-12dBFS_pct", t12, lim (t12, 1.0, 1.5));
         row ("thd", String ((int) f) + "Hz_-24dBFS_pct", thdPct (r, f, 0.0631f));
@@ -1018,6 +1018,29 @@ static void testEquanimity (double sr)
         row ("thd", String ((int) f) + "Hz_0dBFS_pct", thdPct (r, f, 1.0f));
     }
     { Rig r (sr); r.set ("eqin", 0); row ("thd", "50Hz_0dBFS_pct", thdPct (r, 50, 1.0f)); }
+    // smoothness: SMPTE intermodulation (60 Hz + 7 kHz, 4:1) at -12 dBFS stays low, and silence in is silence out
+    {
+        Rig r (sr); r.reset();
+        const int n = (int) sr * 2;
+        Buf s ((size_t) n);
+        for (int i = 0; i < n; ++i) s[(size_t) i] = (float) (0.2 * std::sin (MathConstants<double>::twoPi * 60.0 * i / sr) + 0.05 * std::sin (MathConstants<double>::twoPi * 7000.0 * i / sr));
+        Buf a, b; r.process (s, s, a, b);
+        const int from = (int) sr, len = (int) sr / 60 * 60;
+        const double c7 = std::abs (demod (a, from, from + len, 7000.0, sr));
+        double side = 0; for (int k = 1; k <= 3; ++k) { const double u = std::abs (demod (a, from, from + len, 7000.0 + 60.0 * k, sr)), d = std::abs (demod (a, from, from + len, 7000.0 - 60.0 * k, sr)); side += u * u + d * d; }
+        const double imd = 100.0 * std::sqrt (side) / c7;
+        row ("smooth", "smpte_imd_-12dBFS_pct", imd, imd < 0.8 ? "PASS" : "FAIL");   // mostly 2nd order, as a single-ended triode gives
+        Rig q (sr); q.reset(); Buf z ((size_t) n, 0.0f), za, zb; q.process (z, z, za, zb);
+        double pk = 0; for (auto v : za) pk = std::max (pk, (double) std::abs (v));
+        row ("smooth", "silence_out_dBFS", db (pk + 1e-12), pk < 1.0e-6 ? "PASS" : "FAIL");
+    }
+    // the top end keeps its analog shape: a 12 kHz peak is as wide above as below (no squeezing near the top of the band)
+    {
+        Rig r (sr); r.set ("hifreq", 6); r.set ("hiboost", 10); r.set ("bw", 5);
+        const double below = eqGain (r, 12000.0 / 1.414), above = eqGain (r, 12000.0 * 1.414);
+        row ("smooth", "12k_peak_half_octave_below_dB", below);
+        row ("smooth", "12k_peak_half_octave_above_dB", above, std::abs (above - below) < 2.0 ? "PASS" : "FAIL");
+    }
     // tube warmth: the 2nd harmonic leads the 3rd at every level, from quiet to driven
     for (double dbfs : { -24.0, -18.0, -12.0, -6.0, -1.0 })
     {
@@ -1083,12 +1106,16 @@ static void testEquanimity (double sr)
         Rig w (sr); w.set ("msmode", 0); w.set ("solo", 1); const double lr = eqGain (w, 1000, 0.1f);
         row ("solo", "LR_solo_ignored_dB", lr, std::abs (lr) < 0.5 ? "PASS" : "FAIL");
     }
-    // Midrange (MEQ-5): peaks and dip at their centre frequencies, 200 Hz - 5 kHz
+    // Midrange (MEQ-5, its published ranges): low peak +10 dB (200 Hz - 1 kHz), dip -10 dB (200 Hz - 7 kHz), high peak +8 dB (1.5 - 5 kHz)
     {
-        const double lo[] { 200, 300, 500, 700, 1000 }, dip[] { 200, 300, 500, 700, 1000, 1500, 2000, 3000, 4000, 5000 }, hi[] { 1500, 2000, 3000, 4000, 5000 };
+        const double lo[] { 200, 300, 500, 700, 1000 }, dip[] { 200, 300, 500, 700, 1000, 1500, 2000, 3000, 4000, 5000, 7000 }, hi[] { 1500, 2000, 3000, 4000, 5000 };
         for (int i = 0; i < 5; ++i) { Rig r (sr); r.norm ("mlfreq", i / 4.0f); r.set ("mlpeak", 10); const double g = eqGain (r, lo[i]); row ("mid-lopeak", String ((int) lo[i]) + "Hz_dB", g, std::abs (g - 10) < 1.0 ? "PASS" : "WARN"); }
-        for (int i = 0; i < 10; ++i) { Rig r (sr); r.norm ("mdfreq", i / 9.0f); r.set ("mdip", 10); const double g = eqGain (r, dip[i]); row ("mid-dip", String ((int) dip[i]) + "Hz_dB", g, std::abs (g + 10) < 1.0 ? "PASS" : "WARN"); }
-        for (int i = 0; i < 5; ++i) { Rig r (sr); r.norm ("mhfreq", i / 4.0f); r.set ("mhpeak", 10); const double g = eqGain (r, hi[i]); row ("mid-hipeak", String ((int) hi[i]) + "Hz_dB", g, std::abs (g - 10) < 1.0 ? "PASS" : "WARN"); }
+        for (int i = 0; i < 11; ++i) { Rig r (sr); r.norm ("mdfreq", i / 10.0f); r.set ("mdip", 10); const double g = eqGain (r, dip[i]); row ("mid-dip", String ((int) dip[i]) + "Hz_dB", g, std::abs (g + 10) < 1.0 ? "PASS" : "WARN"); }
+        for (int i = 0; i < 5; ++i) { Rig r (sr); r.norm ("mhfreq", i / 4.0f); r.set ("mhpeak", 10); const double g = eqGain (r, hi[i]); row ("mid-hipeak", String ((int) hi[i]) + "Hz_dB", g, std::abs (g - 8) < 1.0 ? "PASS" : "WARN"); }
+        // audio taper here too: a quarter of the way up already lifts 500 Hz by 4 dB or more, and a gentle setting is wide
+        { Rig r (sr); r.set ("mlfreq", 2); r.set ("mlpeak", 2.5f); const double g = eqGain (r, 500), o = eqGain (r, 250);
+          row ("mid-taper", "lopeak_2.5_at_500Hz_dB", g, g > 4.0 ? "PASS" : "FAIL");
+          row ("mid-taper", "lopeak_2.5_octave_below_dB", o, o > g * 0.45 ? "PASS" : "FAIL"); }
         Rig r (sr); r.set ("m_mdip", 10); r.set ("msmode", 1);
         const double m = eqGain (r, 1000, 0.03f, false), s = eqGain (r, 1000, 0.03f, true);
         row ("mid-path", "mid_bank_dip_on_mid_dB", m, m < -8 ? "PASS" : "FAIL");
