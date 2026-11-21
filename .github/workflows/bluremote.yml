@@ -1,0 +1,44 @@
+name: Build BluRemote
+
+on:
+  push:
+    branches: [bluremote]
+  workflow_dispatch:
+
+jobs:
+  windows-32bit:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # to publish the "bluremote-latest" release the tablet downloads from
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Check
+        run: |
+          go vet ./...
+          GOOS=windows GOARCH=386 go vet ./...
+
+      - name: Build for 32-bit Windows (Acer Iconia and friends)
+        run: |
+          VERSION="0.1.${GITHUB_RUN_NUMBER}"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          GOOS=windows GOARCH=386 CGO_ENABLED=0 go build -trimpath \
+            -ldflags "-s -w -H=windowsgui -X main.version=$VERSION" -o BluRemote.exe .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BluRemote
+          path: BluRemote.exe
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete bluremote-latest --yes --cleanup-tag || true
+          gh release create bluremote-latest BluRemote.exe --target "$GITHUB_SHA" \
+            --title "BluRemote $VERSION" \
+            --notes "Bluesound / BluOS touch controller for 32-bit Windows tablets. Download BluRemote.exe on the tablet and run it once."

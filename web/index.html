@@ -1,0 +1,488 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>BluRemote</title>
+<style>
+  :root {
+    --bg: #121311;
+    --plate: #1c1f1b;
+    --ink: #eeeae0;
+    --dim: #9a978c;
+    --faint: #5d5c55;
+    --accent: #c9b27a;   /* brass */
+    --line: rgba(238,234,224,.12);
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink);
+    font-family: "Segoe UI", system-ui, -apple-system, sans-serif; overflow: hidden;
+    user-select: none; -webkit-user-select: none; -ms-user-select: none; touch-action: manipulation; }
+  button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
+  svg { display: block; fill: currentColor; }
+
+  #backdrop { position: fixed; inset: -10%; top:-10%; left:-10%; right:-10%; bottom:-10%;
+    background-size: cover; background-position: center; filter: blur(48px) saturate(1.2);
+    opacity: .35; transition: background-image .6s; z-index: 0; }
+  #shade { position: fixed; top:0; left:0; right:0; bottom:0; z-index: 0;
+    background: linear-gradient(180deg, rgba(18,19,17,.55), rgba(18,19,17,.92)); }
+
+  #app { position: relative; z-index: 1; height: 100%; display: flex; flex-direction: column;
+    padding: 18px 26px 22px; }
+
+  /* top bar */
+  .top { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 52px; }
+  .room { display: flex; align-items: center; gap: 10px; padding: 8px 14px 8px 10px;
+    border: 1px solid var(--line); border-radius: 26px; max-width: 60%; }
+  .room .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--faint); flex: none; }
+  .room.live .dot { background: #8fc27a; }
+  .room span { font-size: 19px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .top .right { display: flex; align-items: center; gap: 18px; }
+  #clock { font-size: 22px; color: var(--dim); font-variant-numeric: tabular-nums; }
+  .iconbtn { width: 48px; height: 48px; display: flex; align-items: center; justify-content: center;
+    border-radius: 50%; color: var(--dim); }
+  .iconbtn:active { background: var(--line); }
+
+  /* main */
+  .main { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 22px; min-height: 0; }
+  .artwrap { width: 72vw; max-width: 46vh; flex: none;
+    border-radius: 10px; overflow: hidden; background: var(--plate);
+    box-shadow: 0 24px 60px rgba(0,0,0,.55); position: relative; }
+  .artwrap:after { content: ""; display: block; padding-top: 100%; }
+  #art { position: absolute; top:0; left:0; width: 100%; height: 100%; object-fit: cover; }
+  .noart { position: absolute; top:0; left:0; right:0; bottom:0; display: flex; align-items: center;
+    justify-content: center; color: var(--faint); }
+  .meta { width: 100%; text-align: center; }
+  #t1 { font-size: 30px; font-weight: 600; line-height: 1.2; margin: 0 0 6px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #t2 { font-size: 21px; color: var(--dim); margin: 0;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #svc { font-size: 13px; letter-spacing: .14em; text-transform: uppercase; color: var(--accent);
+    margin-top: 10px; min-height: 16px; }
+
+  .progress { width: 100%; }
+  .bar { height: 5px; background: var(--line); border-radius: 3px; overflow: hidden; }
+  #fill { height: 100%; width: 0; background: var(--ink); border-radius: 3px; }
+  .times { display: flex; justify-content: space-between; font-size: 14px; color: var(--dim);
+    margin-top: 7px; font-variant-numeric: tabular-nums; }
+  .progress.hidden { visibility: hidden; }
+
+  .transport { display: flex; align-items: center; justify-content: center; gap: 46px; }
+  .tbtn { width: 74px; height: 74px; display: flex; align-items: center; justify-content: center;
+    border-radius: 50%; }
+  .tbtn:active { background: var(--line); }
+  .play { width: 104px; height: 104px; border-radius: 50%; background: var(--ink); color: var(--bg);
+    display: flex; align-items: center; justify-content: center; box-shadow: 0 10px 30px rgba(0,0,0,.4); }
+  .play:active { transform: scale(.96); }
+
+  .volume { width: 100%; display: flex; align-items: center; gap: 16px; }
+  .volume.hidden { display: none; }
+  #volnum { width: 44px; text-align: right; color: var(--dim); font-size: 17px; font-variant-numeric: tabular-nums; }
+  input[type=range] { -webkit-appearance: none; appearance: none; flex: 1; height: 44px;
+    background: transparent; margin: 0; }
+  input[type=range]::-webkit-slider-runnable-track { height: 6px; background: var(--line); border-radius: 3px; }
+  input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 34px; height: 34px;
+    margin-top: -14px; border-radius: 50%; background: var(--ink); border: 0; }
+  input[type=range]::-moz-range-track { height: 6px; background: var(--line); border-radius: 3px; }
+  input[type=range]::-moz-range-progress { height: 6px; background: var(--accent); border-radius: 3px; }
+  input[type=range]::-moz-range-thumb { width: 34px; height: 34px; border-radius: 50%;
+    background: var(--ink); border: 0; }
+  input[type=range]::-ms-track { height: 6px; background: transparent; border-color: transparent; color: transparent; }
+  input[type=range]::-ms-fill-lower { background: var(--accent); border-radius: 3px; }
+  input[type=range]::-ms-fill-upper { background: var(--line); border-radius: 3px; }
+  input[type=range]::-ms-thumb { width: 30px; height: 30px; border-radius: 50%; background: var(--ink); border: 0; }
+  #mute.on { color: #d9826a; }
+
+  /* presets */
+  .presets { margin-top: 18px; }
+  .presets h3 { font-size: 13px; letter-spacing: .14em; text-transform: uppercase; color: var(--dim);
+    font-weight: 600; margin: 0 0 10px; }
+  #presetRow { display: flex; gap: 12px; overflow-x: auto; padding-bottom: 6px;
+    -webkit-overflow-scrolling: touch; scrollbar-width: none; }
+  #presetRow::-webkit-scrollbar { display: none; }
+  .preset { flex: none; width: 112px; text-align: left; }
+  .preset .pimg { width: 112px; height: 112px; border-radius: 8px; background: var(--plate) center/cover no-repeat;
+    border: 1px solid var(--line); display: flex; align-items: center; justify-content: center;
+    font-size: 30px; color: var(--faint); }
+  .preset .pname { font-size: 14px; color: var(--dim); margin-top: 6px; white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis; }
+  .preset:active .pimg { border-color: var(--accent); }
+  .presets.hidden { display: none; }
+
+  /* landscape: art left, controls right */
+  @media (orientation: landscape) {
+    #app { padding: 14px 28px 16px; }
+    .main { flex-direction: row; gap: 40px; }
+    .artwrap { width: 44vw; max-width: 62vh; }
+    .side { flex: 1; display: flex; flex-direction: column; gap: 20px; justify-content: center; min-width: 0; }
+    .meta { text-align: left; }
+    .transport { justify-content: flex-start; gap: 34px; }
+    .presets { margin-top: 8px; }
+    .preset, .preset .pimg { width: 92px; } .preset .pimg { height: 92px; }
+  }
+  @media (orientation: portrait) {
+    .side { width: 100%; display: flex; flex-direction: column; gap: 20px; align-items: center; }
+  }
+
+  /* sheets */
+  .sheet { position: fixed; top:0; left:0; right:0; bottom:0; z-index: 10; background: rgba(10,10,9,.72);
+    display: none; align-items: flex-end; justify-content: center; }
+  .sheet.open { display: flex; }
+  .panel { width: 100%; max-width: 640px; background: var(--plate); border-radius: 18px 18px 0 0;
+    padding: 22px 24px 30px; max-height: 85%; overflow-y: auto; border-top: 1px solid var(--line); }
+  .panel h2 { margin: 0 0 16px; font-size: 22px; font-weight: 600; }
+  .item { display: flex; align-items: center; justify-content: space-between; width: 100%;
+    padding: 16px 6px; border-bottom: 1px solid var(--line); font-size: 19px; text-align: left; }
+  .item small { color: var(--dim); font-size: 14px; display: block; margin-top: 3px; }
+  .item.sel { color: var(--accent); }
+  .row { display: flex; gap: 10px; margin-top: 18px; }
+  .row input { flex: 1; font: inherit; font-size: 18px; padding: 12px 14px; border-radius: 10px;
+    border: 1px solid var(--line); background: var(--bg); color: var(--ink); }
+  .pill { padding: 12px 20px; border-radius: 24px; border: 1px solid var(--line); font-size: 17px; }
+  .pill.primary { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+  .pill.danger { color: #d9826a; }
+  .note { color: var(--dim); font-size: 15px; margin: 12px 2px 0; min-height: 20px; }
+
+  /* ambient / idle */
+  #ambient { position: fixed; top:0; left:0; right:0; bottom:0; z-index: 20; background: #000;
+    display: none; flex-direction: column; align-items: center; justify-content: center; gap: 26px;
+    opacity: 0; transition: opacity 1.2s; }
+  #ambient.on { display: flex; }
+  #ambient.show { opacity: 1; }
+  #ambClock { font-size: 120px; font-weight: 200; color: #6d6a61; font-variant-numeric: tabular-nums;
+    letter-spacing: -.02em; }
+  #ambArt { width: 34vmin; height: 34vmin; border-radius: 8px; object-fit: cover; opacity: .55; }
+  #ambText { color: #57554e; font-size: 20px; text-align: center; max-width: 80%; }
+
+  #toast { position: fixed; left: 50%; bottom: 26px; transform: translateX(-50%); z-index: 30;
+    background: #2a2d28; padding: 12px 20px; border-radius: 22px; font-size: 16px; display: none; }
+</style>
+</head>
+<body>
+<div id="backdrop"></div><div id="shade"></div>
+
+<div id="app">
+  <div class="top">
+    <button class="room" id="roomBtn"><i class="dot"></i><span id="roomName">Finding player…</span></button>
+    <div class="right">
+      <div id="clock">--:--</div>
+      <button class="iconbtn" id="setBtn" aria-label="Settings">
+        <svg width="26" height="26" viewBox="0 0 24 24"><path d="M19.4 13a7.6 7.6 0 0 0 0-2l2.1-1.6-2-3.5-2.5 1a7.4 7.4 0 0 0-1.7-1L15 3.3h-4l-.4 2.6a7.4 7.4 0 0 0-1.7 1l-2.5-1-2 3.5L6.6 11a7.6 7.6 0 0 0 0 2l-2.1 1.6 2 3.5 2.5-1a7.4 7.4 0 0 0 1.7 1l.4 2.6h4l.4-2.6a7.4 7.4 0 0 0 1.7-1l2.5 1 2-3.5zM13 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7z" transform="translate(-1 0)"/></svg>
+      </button>
+    </div>
+  </div>
+
+  <div class="main">
+    <div class="artwrap">
+      <div class="noart"><svg width="72" height="72" viewBox="0 0 24 24"><path d="M12 3v10.6A4 4 0 1 0 14 17V7h4V3z"/></svg></div>
+      <img id="art" alt="" style="display:none">
+    </div>
+    <div class="side">
+      <div class="meta">
+        <p id="t1">—</p>
+        <p id="t2"></p>
+        <div id="svc"></div>
+      </div>
+      <div class="progress hidden" id="progress">
+        <div class="bar"><div id="fill"></div></div>
+        <div class="times"><span id="pos">0:00</span><span id="len">0:00</span></div>
+      </div>
+      <div class="transport">
+        <button class="tbtn" id="back" aria-label="Previous"><svg width="40" height="40" viewBox="0 0 24 24"><path d="M6 5h2v14H6zm3.5 7L19 5v14z"/></svg></button>
+        <button class="play" id="playBtn" aria-label="Play/Pause">
+          <svg id="icoPlay" width="46" height="46" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+          <svg id="icoPause" width="46" height="46" viewBox="0 0 24 24" style="display:none"><path d="M6 5h4v14H6zm8 0h4v14h-4z"/></svg>
+        </button>
+        <button class="tbtn" id="skip" aria-label="Next"><svg width="40" height="40" viewBox="0 0 24 24"><path d="M16 5h2v14h-2zM5 5l9.5 7L5 19z"/></svg></button>
+      </div>
+      <div class="volume" id="volume">
+        <button class="iconbtn" id="mute" aria-label="Mute">
+          <svg width="28" height="28" viewBox="0 0 24 24"><path id="muteIco" d="M4 9v6h4l5 5V4L8 9zm12.5 3a4.5 4.5 0 0 0-2.5-4v8a4.5 4.5 0 0 0 2.5-4z"/></svg>
+        </button>
+        <input type="range" id="vol" min="0" max="100" step="1" value="0">
+        <div id="volnum">–</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="presets hidden" id="presets">
+    <h3>Presets</h3>
+    <div id="presetRow"></div>
+  </div>
+</div>
+
+<!-- player picker -->
+<div class="sheet" id="roomSheet">
+  <div class="panel">
+    <h2>Players</h2>
+    <div id="playerList"></div>
+    <p class="note" id="scanNote"></p>
+    <div class="row">
+      <input id="manualIp" placeholder="IP address, e.g. 192.168.1.40" inputmode="decimal">
+      <button class="pill primary" id="manualGo">Use</button>
+    </div>
+    <div class="row">
+      <button class="pill" id="rescan">Search again</button>
+      <button class="pill" data-close>Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- settings -->
+<div class="sheet" id="setSheet">
+  <div class="panel">
+    <h2>BluRemote</h2>
+    <button class="item" id="dimToggle">Dim to clock when idle <span id="dimState">On</span></button>
+    <button class="item" id="reloadBtn">Reload page <span></span></button>
+    <p class="note" id="verNote"></p>
+    <div class="row">
+      <button class="pill danger" id="quitBtn">Quit BluRemote</button>
+      <button class="pill" data-close>Close</button>
+    </div>
+  </div>
+</div>
+
+<div id="ambient"><div id="ambClock">--:--</div><img id="ambArt" alt="" style="display:none"><div id="ambText"></div></div>
+<div id="toast"></div>
+
+<script>
+(function () {
+  "use strict";
+  var $ = function (id) { return document.getElementById(id); };
+  var state = { player: "", players: [], status: null, etag: "", secs: 0, totlen: 0,
+                secsAt: 0, playing: false, volDragging: false, volume: -1, mute: false,
+                pollGen: 0, lastTouch: Date.now(),
+                dim: localStorage.getItem("dim") !== "off" };
+
+  function q(url, opts) {
+    return fetch(url, opts || {}).then(function (r) {
+      if (!r.ok) return r.text().then(function (t) { throw new Error(t || r.status); });
+      return r;
+    });
+  }
+  function xml(text) { return new DOMParser().parseFromString(text, "text/xml"); }
+  function tag(doc, name) { var n = doc.getElementsByTagName(name)[0]; return n ? n.textContent : ""; }
+  function artUrl(u) { return u ? "/art?u=" + encodeURIComponent(u) : ""; }
+  function fmt(s) { s = Math.max(0, Math.floor(s)); var m = Math.floor(s / 60), r = s % 60;
+    if (m >= 60) return Math.floor(m / 60) + ":" + pad(m % 60) + ":" + pad(r); return m + ":" + pad(r); }
+  function pad(n) { return (n < 10 ? "0" : "") + n; }
+  function toast(msg) { var t = $("toast"); t.textContent = msg; t.style.display = "block";
+    clearTimeout(toast.h); toast.h = setTimeout(function () { t.style.display = "none"; }, 2600); }
+  function cmd(path) { return q("/bluos/" + path).catch(function (e) { toast("Player didn't respond"); }); }
+
+  /* ---------- clock & progress ---------- */
+  function tick() {
+    var d = new Date(), c = pad(d.getHours()) + ":" + pad(d.getMinutes());
+    $("clock").textContent = c; $("ambClock").textContent = c;
+    if (state.totlen > 0) {
+      var s = state.secs + (state.playing ? (Date.now() - state.secsAt) / 1000 : 0);
+      if (s > state.totlen) s = state.totlen;
+      $("fill").style.width = (100 * s / state.totlen) + "%";
+      $("pos").textContent = fmt(s);
+    }
+    if (state.dim && !$("ambient").classList.contains("on") &&
+        Date.now() - state.lastTouch > (state.playing ? 5 : 2) * 60000 && !anySheetOpen()) enterAmbient();
+  }
+  setInterval(tick, 1000);
+
+  /* ---------- status (long-poll) ---------- */
+  function render(doc) {
+    var st = tag(doc, "state");
+    state.playing = (st === "play" || st === "stream");
+    $("icoPlay").style.display = state.playing ? "none" : "";
+    $("icoPause").style.display = state.playing ? "" : "none";
+
+    var t1 = tag(doc, "title1") || tag(doc, "name") || (st === "stop" ? "Nothing playing" : "—");
+    var t2 = tag(doc, "title2") || tag(doc, "artist");
+    var t3 = tag(doc, "title3") || tag(doc, "album");
+    $("t1").textContent = t1;
+    $("t2").textContent = [t2, t3].filter(Boolean).join(" · ");
+    $("svc").textContent = tag(doc, "serviceName") || tag(doc, "service") || "";
+    $("ambText").textContent = [t1, t2].filter(Boolean).join(" — ");
+
+    var img = tag(doc, "image");
+    var a = $("art"), aa = $("ambArt");
+    if (img) {
+      var u = artUrl(img);
+      if (a.getAttribute("data-src") !== u) {
+        a.setAttribute("data-src", u); a.src = u; aa.src = u;
+        $("backdrop").style.backgroundImage = "url('" + u + "')";
+      }
+      a.style.display = ""; aa.style.display = "";
+    } else {
+      a.style.display = "none"; aa.style.display = "none"; a.removeAttribute("data-src");
+      $("backdrop").style.backgroundImage = "none";
+    }
+
+    state.totlen = parseFloat(tag(doc, "totlen")) || 0;
+    state.secs = parseFloat(tag(doc, "secs")) || 0;
+    state.secsAt = Date.now();
+    $("progress").className = "progress" + (state.totlen > 0 ? "" : " hidden");
+    $("len").textContent = fmt(state.totlen);
+
+    var v = parseInt(tag(doc, "volume"), 10);
+    state.mute = tag(doc, "mute") === "1";
+    if (isNaN(v)) v = -1;
+    state.volume = v;
+    $("volume").className = "volume" + (v < 0 ? " hidden" : "");
+    if (!state.volDragging && v >= 0) { $("vol").value = v; $("volnum").textContent = state.mute ? "—" : v; }
+    $("mute").className = "iconbtn" + (state.mute ? " on" : "");
+    $("muteIco").setAttribute("d", state.mute
+      ? "M4 9v6h4l5 5V4L8 9zm12.6 3 2.2-2.2-1.1-1.1-2.2 2.2-2.2-2.2-1.1 1.1 2.2 2.2-2.2 2.2 1.1 1.1 2.2-2.2 2.2 2.2 1.1-1.1z"
+      : "M4 9v6h4l5 5V4L8 9zm12.5 3a4.5 4.5 0 0 0-2.5-4v8a4.5 4.5 0 0 0 2.5-4z");
+    tick();
+  }
+
+  function poll(gen) {
+    if (gen !== state.pollGen) return;
+    var url = "/bluos/Status" + (state.etag ? "?timeout=55&etag=" + encodeURIComponent(state.etag) : "");
+    q(url).then(function (r) { return r.text(); }).then(function (t) {
+      if (gen !== state.pollGen) return;
+      var doc = xml(t), root = doc.documentElement;
+      state.etag = root ? (root.getAttribute("etag") || "") : "";
+      $("roomBtn").className = "room live";
+      render(doc);
+      poll(gen);
+    }).catch(function () {
+      if (gen !== state.pollGen) return;
+      $("roomBtn").className = "room";
+      state.etag = "";
+      setTimeout(function () { poll(gen); }, 3000);
+    });
+  }
+  function restartPoll() { state.pollGen++; state.etag = ""; poll(state.pollGen); }
+
+  /* ---------- presets ---------- */
+  function loadPresets() {
+    q("/bluos/Presets").then(function (r) { return r.text(); }).then(function (t) {
+      var list = xml(t).getElementsByTagName("preset"), row = $("presetRow");
+      row.innerHTML = "";
+      for (var i = 0; i < list.length; i++) (function (p) {
+        var b = document.createElement("button"); b.className = "preset";
+        var im = document.createElement("div"); im.className = "pimg";
+        var src = p.getAttribute("image");
+        if (src) im.style.backgroundImage = "url('" + artUrl(src) + "')";
+        else im.textContent = p.getAttribute("id");
+        var nm = document.createElement("div"); nm.className = "pname"; nm.textContent = p.getAttribute("name") || ("Preset " + p.getAttribute("id"));
+        b.appendChild(im); b.appendChild(nm);
+        b.onclick = function () { cmd("Preset?id=" + encodeURIComponent(p.getAttribute("id"))); };
+        row.appendChild(b);
+      })(list[i]);
+      $("presets").className = "presets" + (list.length ? "" : " hidden");
+    }).catch(function () { $("presets").className = "presets hidden"; });
+  }
+
+  /* ---------- players ---------- */
+  function setPlayer(host, name) {
+    return q("/api/config", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ player: host }) }).then(function () {
+      state.player = host;
+      $("roomName").textContent = name || host;
+      closeSheets(); restartPoll(); loadPresets();
+    });
+  }
+  function nameFor(host) {
+    for (var i = 0; i < state.players.length; i++) if (state.players[i].host === host) return state.players[i].name;
+    return host;
+  }
+  function renderPlayers() {
+    var box = $("playerList"); box.innerHTML = "";
+    state.players.forEach(function (p) {
+      var b = document.createElement("button");
+      b.className = "item" + (p.host === state.player ? " sel" : "");
+      b.innerHTML = "<div><div></div><small></small></div><span></span>";
+      b.firstChild.firstChild.textContent = p.name;
+      b.firstChild.lastChild.textContent = [p.model, p.host].filter(Boolean).join(" · ");
+      b.lastChild.textContent = p.host === state.player ? "●" : "";
+      b.onclick = function () { setPlayer(p.host, p.name); };
+      box.appendChild(b);
+    });
+  }
+  function scanPlayers(force) {
+    $("scanNote").textContent = "Searching the network…";
+    return q("/api/players" + (force ? "?rescan=1" : "")).then(function (r) { return r.json(); }).then(function (d) {
+      state.players = d.players || [];
+      $("verNote").textContent = "Version " + (d.version || "?");
+      $("scanNote").textContent = state.players.length ? "" : "No players found. Type the player's IP address (shown in the BluOS app under Settings → Diagnostics).";
+      renderPlayers();
+      return d;
+    }).catch(function () { $("scanNote").textContent = "Search failed."; return { players: [] }; });
+  }
+
+  /* ---------- sheets ---------- */
+  function anySheetOpen() { return document.querySelector(".sheet.open") !== null; }
+  function openSheet(id) { closeSheets(); $(id).classList.add("open"); }
+  function closeSheets() { var s = document.querySelectorAll(".sheet"); for (var i = 0; i < s.length; i++) s[i].classList.remove("open"); }
+  Array.prototype.forEach.call(document.querySelectorAll("[data-close]"), function (b) { b.onclick = closeSheets; });
+  Array.prototype.forEach.call(document.querySelectorAll(".sheet"), function (s) {
+    s.addEventListener("click", function (e) { if (e.target === s) closeSheets(); });
+  });
+
+  /* ---------- ambient ---------- */
+  function enterAmbient() { var a = $("ambient"); a.classList.add("on");
+    setTimeout(function () { a.classList.add("show"); }, 30); }
+  function exitAmbient() { var a = $("ambient"); a.classList.remove("show"); a.classList.remove("on"); }
+  $("ambient").addEventListener("click", function (e) { e.stopPropagation(); exitAmbient(); state.lastTouch = Date.now(); });
+  ["touchstart", "mousedown", "keydown"].forEach(function (ev) {
+    document.addEventListener(ev, function () { state.lastTouch = Date.now(); }, true);
+  });
+  function showDim() { $("dimState").textContent = state.dim ? "On" : "Off"; }
+
+  /* ---------- controls ---------- */
+  $("playBtn").onclick = function () { cmd(state.playing ? "Pause" : "Play"); };
+  $("skip").onclick = function () { cmd("Skip"); };
+  $("back").onclick = function () { cmd("Back"); };
+  $("mute").onclick = function () { cmd("Volume?mute=" + (state.mute ? "0" : "1")); };
+
+  var volTimer = null, volPending = null;
+  function sendVol() {
+    if (volPending === null) { volTimer = null; return; }
+    var v = volPending; volPending = null;
+    cmd("Volume?level=" + v);
+    volTimer = setTimeout(sendVol, 180);
+  }
+  function onVol() {
+    state.volDragging = true;
+    var v = parseInt($("vol").value, 10);
+    $("volnum").textContent = v;
+    volPending = v;
+    if (!volTimer) sendVol();
+  }
+  $("vol").addEventListener("input", onVol);
+  $("vol").addEventListener("change", function () { onVol(); setTimeout(function () { state.volDragging = false; }, 800); });
+
+  $("roomBtn").onclick = function () { openSheet("roomSheet"); scanPlayers(false); };
+  $("rescan").onclick = function () { scanPlayers(true); };
+  $("manualGo").onclick = function () {
+    var ip = $("manualIp").value.trim(); if (!ip) return;
+    $("scanNote").textContent = "Checking " + ip + "…";
+    setPlayer(ip, ip).then(function () { scanPlayers(false).then(function () { $("roomName").textContent = nameFor(ip); }); })
+      .catch(function () { $("scanNote").textContent = "No BluOS player answered at " + ip + "."; });
+  };
+  $("setBtn").onclick = function () { showDim(); openSheet("setSheet"); };
+  $("dimToggle").onclick = function () { state.dim = !state.dim; localStorage.setItem("dim", state.dim ? "on" : "off"); showDim(); };
+  $("reloadBtn").onclick = function () { location.reload(); };
+  $("quitBtn").onclick = function () { q("/api/quit", { method: "POST" }).then(function () {
+    document.body.innerHTML = "<p style='padding:40px;font-size:22px'>BluRemote stopped. It will start again next time Windows starts.</p>"; }); };
+
+  /* ---------- start ---------- */
+  q("/api/config").then(function (r) { return r.json(); }).then(function (c) {
+    if (c.player) {
+      state.player = c.player; $("roomName").textContent = c.player;
+      restartPoll(); loadPresets();
+      scanPlayers(false).then(function () { $("roomName").textContent = nameFor(c.player); });
+    } else {
+      $("roomName").textContent = "Finding player…";
+      scanPlayers(true).then(function (d) {
+        var ps = d.players || [];
+        if (ps.length === 1) setPlayer(ps[0].host, ps[0].name);
+        else { $("roomName").textContent = ps.length ? "Choose player" : "No player found"; openSheet("roomSheet"); }
+      });
+    }
+  });
+  tick();
+})();
+</script>
+</body>
+</html>
