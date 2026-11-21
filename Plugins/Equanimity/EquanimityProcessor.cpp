@@ -1,3 +1,4 @@
+#include <complex>
 #include "EquanimityProcessor.h"
 #include "PluginEditor.h"
 #include <string>
@@ -74,7 +75,7 @@ static inline float triode (float x, float k, float b)
     const float t0 = analog::fastTanh (b), slope = 1.0f - t0 * t0;
     return (analog::fastTanh (k * x + b) - t0) / (k * slope);
 }
-static inline float satLow (float l) { return analog::fastTanh (0.6f * l) / 0.6f; }
+static inline float satLow (float l) { return analog::fastTanh (0.3f * l) / 0.3f; }   // gentle: boosted bass thickens, isn't crushed
 
 EquanimityProcessor::EquanimityProcessor()
     : ArtifactsProcessor (BusesProperties()
@@ -110,8 +111,9 @@ double EquanimityProcessor::attSelHz (int i)  { static const double f[] { 5000, 
 
 
 // The EQP-1A numbers: low boost 0 - 13.5 dB, low atten 0 - 17.5 dB, high boost 0 - 18 dB, high atten 0 - 16 dB.
-// In the hardware boost and atten share one passive network: the boost shelf has a little resonant lift, the atten shelf turns over
-// higher and more gently, so the two together (same frequency) give more low end with a dip above it: the Pultec trick.
+// In the hardware boost and atten share one passive network. The boost is a broad shelf that still lifts an octave or two above
+// the frequency chosen (at 60 Hz, boost 10: about +10 dB at 60, +5.5 at 120, +2 at 250); the atten turns over higher and more
+// gently, so the two together (same frequency) give more low end with a dip above it: the Pultec trick.
 void EquanimityProcessor::designEq (EqChannel& e, const Settings& s) const
 {
     const double nyq = 0.45 * sr;
@@ -132,32 +134,43 @@ void EquanimityProcessor::designEq (EqChannel& e, const Settings& s) const
         const double A = std::pow (10.0, dB / 40.0), w = MathConstants<double>::twoPi * jmin (f, nyq) / sr, cs = std::cos (w), al = std::sin (w) / (2 * Q);
         b.set (1 + al * A, -2 * cs, 1 - al * A, 1 + al / A, -2 * cs, 1 - al / A);
     };
-    const double fl = loFreqHz (s.loFreq);
-    shelfLow (e.loBoost, fl, 11.6 * s.loBoost / 10.0, 1.5);                // resonant lift, and a dip just above it
-    shelfLow (e.loAtten, fl * 1.8, -19.2 * (s.loAtten / 10.0) * (1.0 - 0.25 * s.loBoost / 10.0), 0.45);   // turns over higher and gentler; the network gives a little as the boost comes up
+    const double fl = s.hz[0];
+    shelfLow (e.loBoost, fl * 1.6, 14.0 * s.loBoost / 10.0, 0.5);          // broad, no dip of its own
+    shelfLow (e.loAtten, fl * 4.0, -18.0 * (s.loAtten / 10.0) * (1.0 - 0.25 * s.loBoost / 10.0), 0.7);   // turns over higher and gentler; the network gives a little as the boost comes up
     // bandwidth: sharp (0) is a narrow peak, broad (10) a wide one; the real unit's peak also eases off a little when sharp
     const double q = 4.0 * std::pow (0.14, s.bw / 10.0);                   // 4.0 ... 0.56
-    peak (e.hiPeak, hiFreqHz (s.hiFreq), 18.0 * s.hiBoost / 10.0, q);
+    peak (e.hiPeak, s.hz[1], 18.0 * s.hiBoost / 10.0, q);
     // MEQ-5 midrange: broad peaks (up to +10 dB) either side of a dip (up to -10 dB)
-    peak (e.mLo,  mLoHz (s.mLoFreq),   10.0 * s.mLoPk / 10.0,  0.70);
-    peak (e.mDip, mDipHz (s.mDipFreq), -10.0 * s.mDip / 10.0,  0.85);
-    peak (e.mHi,  mHiHz (s.mHiFreq),   10.0 * s.mHiPk / 10.0,  0.80);
-    shelfHigh (e.hiAtten, attSelHz (s.attSel), -16.0 * s.hiAtten / 10.0, 0.6);
+    peak (e.mLo,  s.hz[3],   10.0 * s.mLoPk / 10.0,  0.70);
+    peak (e.mDip, s.hz[4], -10.0 * s.mDip / 10.0,  0.85);
+    peak (e.mHi,  s.hz[5],   10.0 * s.mHiPk / 10.0,  0.80);
+    shelfHigh (e.hiAtten, s.hz[2], -16.0 * s.hiAtten / 10.0, 0.6);
 }
 
-// How much the EQ changes the overall level, as heard: the mean power gain over 20 Hz - 20 kHz, equal weight per octave (what pink noise or music would add up to).
-// Auto gain applies the opposite, so tonal changes can be judged without the level jumping.
+// How much the EQ changes the overall level, as heard: the power gain over 20 Hz - 20 kHz, equal weight per octave (as pink noise
+// or music spreads it), each frequency weighted as loudness meters weigh it (ITU BS.1770: the deep bass counts for less,
+// the presence range a little more). Auto gain applies the opposite, so tonal changes can be judged without the level jumping.
+// |K-weighting|^2 at f (the BS.1770 pre-filter and high-pass, as specified at 48 kHz)
+static double kWeight2 (double f)
+{
+    const std::complex<double> z1 = std::polar (1.0, -MathConstants<double>::twoPi * f / 48000.0), z2 = z1 * z1;
+    const auto s = (1.53512485958697 - 2.69169618940638 * z1 + 1.19839281085285 * z2) / (1.0 - 1.69065929318241 * z1 + 0.73248077421585 * z2);
+    const auto h = (1.0 - 2.0 * z1 + z2) / (1.0 - 1.99004745483398 * z1 + 0.99007225036621 * z2);
+    return std::norm (s * h);
+}
 double EquanimityProcessor::loudnessComp (const EqChannel& e) const
 {
     constexpr int N = 40;
-    double acc = 0;
+    double acc = 0, wsum = 0;
     for (int i = 0; i < N; ++i)
     {
         const double f = 20.0 * std::pow (20000.0 / 20.0, (double) i / (N - 1)), w = MathConstants<double>::twoPi * f / sr;
         const double p = e.loBoost.mag2 (w) * e.loAtten.mag2 (w) * e.mLo.mag2 (w) * e.mDip.mag2 (w) * e.mHi.mag2 (w) * e.hiPeak.mag2 (w) * e.hiAtten.mag2 (w);
-        acc += p;
+        const double weight = kWeight2 (f);
+        acc += weight * p;
+        wsum += weight;
     }
-    return std::pow (10.0, jlimit (-12.0, 12.0, -10.0 * std::log10 (std::max (acc / N, 1.0e-12))) / 20.0);
+    return std::pow (10.0, jlimit (-12.0, 12.0, -10.0 * std::log10 (std::max (acc / wsum, 1.0e-12))) / 20.0);
 }
 
 void EquanimityProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
@@ -200,12 +213,15 @@ void EquanimityProcessor::processBlock (AudioBuffer<float>& buffer, MidiBuffer&)
         s.attSel = (int) p[6]->load(); s.hiAtten = p[7]->load();
         s.mLoFreq = (int) p[8]->load(); s.mLoPk = p[9]->load(); s.mDipFreq = (int) p[10]->load(); s.mDip = p[11]->load();
         s.mHiFreq = (int) p[12]->load(); s.mHiPk = p[13]->load();
+        s.hz[0] = loFreqHz (s.loFreq); s.hz[1] = hiFreqHz (s.hiFreq); s.hz[2] = attSelHz (s.attSel);
+        s.hz[3] = mLoHz (s.mLoFreq); s.hz[4] = mDipHz (s.mDipFreq); s.hz[5] = mHiHz (s.mHiFreq);
     };
     load (bankA, tgt[0]);
     load (bankB, tgt[1]);
 
     float peak = 0.0f, ins[2] { 0.0f, 0.0f };
     const float glide = 1.0f - std::exp (-32.0f / (0.02f * (float) sr));
+    const float hzGlide = 1.0f - std::exp (-32.0f / (0.03f * (float) sr));
     auto* L = buffer.getWritePointer (0);
     auto* R = buffer.getWritePointer (1);
 
@@ -221,6 +237,8 @@ void EquanimityProcessor::processBlock (AudioBuffer<float>& buffer, MidiBuffer&)
             cs.mLoPk += (t.mLoPk - cs.mLoPk) * glide; cs.mDip += (t.mDip - cs.mDip) * glide; cs.mHiPk += (t.mHiPk - cs.mHiPk) * glide;
             cs.mLoFreq = t.mLoFreq; cs.mDipFreq = t.mDipFreq; cs.mHiFreq = t.mHiFreq;
             cs.loFreq = t.loFreq; cs.hiFreq = t.hiFreq; cs.attSel = t.attSel;
+            for (int k = 0; k < 6; ++k)   // the frequencies glide, on a log scale
+                cs.hz[k] = std::exp (std::log (cs.hz[k]) + (std::log (t.hz[k]) - std::log (cs.hz[k])) * (double) hzGlide);
             designEq (eq[c], cs);
             const double target = autoOn ? loudnessComp (eq[c]) : 1.0;
             eq[c].autoGain += (target - eq[c].autoGain) * 0.25;   // the level follows the dials, not the other way round
@@ -266,8 +284,10 @@ void EquanimityProcessor::processBlock (AudioBuffer<float>& buffer, MidiBuffer&)
                     const float a = std::abs (s);
                     env += (a - env) * (a > env ? aAtt : aRel);                      // 6X4: the supply sags under load
                     const float sag = 1.0f + 0.8f * env;
-                    s = triode (s, 0.24f * sag, 0.06f);                              // 12AX7
-                    s = triode (s, 0.18f * sag, -0.03f);                             // 12AU7, leans the other way (some of the even order cancels)
+                    // 12AX7: biased well off centre, so it bends one way more than the other: the 2nd harmonic leads,
+                    // the 3rd stays below it at any level, and a soft tail of higher ones follows as it is pushed
+                    s = triode (s, 0.09f * sag, 0.45f);
+                    s = triode (s, 0.15f * sag, -0.05f);                             // 12AU7: plenty of headroom, a little odd order when driven
                     low += aLow * (s - low);                                          // output transformer: the iron gives in first at the bottom
                     s += satLow (low) - low;
                     dc2 += aDc * (s - dc2); s -= dc2;                                 // output transformer: no DC out

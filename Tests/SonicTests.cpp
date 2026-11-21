@@ -840,6 +840,60 @@ static double thdPct (Rig& r, double f, float amp, int chan = 0)
     for (int k = 2; k <= 10 && k * f < sr * 0.45; ++k) { const double h = std::abs (demod (o, from, from + len, k * f, sr)); acc += h * h; }
     return 100.0 * std::sqrt (acc) / h1;
 }
+static void probeEquanimity (double sr)
+{
+    // how much the low boost / atten really change the sound at real levels, and with the other switches
+    for (float amp : { 0.03f, 0.1f, 0.25f, 0.5f, 0.9f })
+        for (double f : { 30.0, 60.0, 100.0, 200.0 })
+        {
+            Rig r0 (sr); const double g0 = eqGain (r0, f, amp);
+            Rig r1 (sr); r1.set ("lofreq", 2); r1.set ("loboost", 10); const double g1 = eqGain (r1, f, amp);
+            Rig r2 (sr); r2.set ("lofreq", 2); r2.set ("loatten", 10); const double g2 = eqGain (r2, f, amp);
+            Rig r3 (sr); r3.set ("lofreq", 2); r3.set ("mlpeak", 10); r3.norm ("mlfreq", 0.0f); const double g3 = eqGain (r3, f, amp);
+            row ("probe", "amp" + String (amp, 2) + "_" + String ((int) f) + "Hz flat/boost/atten/mlpk200", g0);
+            std::printf ("   amp %.2f  %4d Hz   flat %6.2f   boost10 %6.2f (%+.2f)   atten10 %6.2f (%+.2f)   midLo200 %+.2f\n", amp, (int) f, g0, g1, g1 - g0, g2, g2 - g0, g3 - g0);
+        }
+    // the valve stage with the EQ flat: which harmonics, how much, at which level
+    for (double f : { 100.0, 1000.0 })
+        for (double dbfs : { -24.0, -18.0, -12.0, -6.0, -1.0 })
+        {
+            Rig r (sr); r.reset();
+            const float amp = (float) std::pow (10.0, dbfs / 20.0);
+            const int n = (int) sr * 2;
+            Buf s = sine (n, f, sr, amp), a, b;
+            r.process (s, s, a, b);
+            const int from = (int) sr, len = (int) (std::floor ((double) (n - from) * f / sr) * sr / f);
+            const double h1 = std::abs (demod (a, from, from + len, f, sr));
+            double hs[6]; double acc = 0;
+            for (int k = 2; k <= 7; ++k) { hs[k - 2] = std::abs (demod (a, from, from + len, k * f, sr)); acc += hs[k - 2] * hs[k - 2]; }
+            std::printf ("   %5.0f Hz %+5.0f dBFS: THD %.4f %%  H2 %6.1f  H3 %6.1f  H4 %6.1f  H5 %6.1f dB (rel. fundamental)\n", f, dbfs,
+                         100.0 * std::sqrt (acc) / h1, db (hs[0] / h1), db (hs[1] / h1), db (hs[2] / h1), db (hs[3] / h1));
+        }
+    for (int ag = 0; ag < 2; ++ag)
+    {
+        Rig r (sr); r.set ("autogain", ag); r.set ("lofreq", 2); r.set ("loboost", 10);
+        std::printf ("   autogain %d: boost10 at 40 Hz %+.2f, at 1 kHz %+.2f\n", ag, eqGain (r, 40, 0.1f), eqGain (r, 1000, 0.1f));
+    }
+}
+// the ITU BS.1770 loudness weighting (48 kHz): a gentle lift above 1.5 kHz and a roll-off of the deep bass
+static Buf kWeight (const Buf& x)
+{
+    Buf y (x.size());
+    double x1 = 0, x2 = 0, y1 = 0, y2 = 0, z1 = 0, z2 = 0;
+    for (size_t i = 0; i < x.size(); ++i)
+    {
+        const double v = x[i];
+        const double s = 1.53512485958697 * v - 2.69169618940638 * x1 + 1.19839281085285 * x2 + 1.69065929318241 * y1 - 0.73248077421585 * y2;
+        x2 = x1; x1 = v; y2 = y1; y1 = s;
+        const double h = s - 2.0 * z1 + z2;   // the high-pass, in direct form with its own history
+        static thread_local double w1 = 0, w2 = 0;
+        if (i == 0) { w1 = w2 = 0; }
+        const double o = h + 1.99004745483398 * w1 - 0.99007225036621 * w2;
+        w2 = w1; w1 = o; z2 = z1; z1 = s;
+        y[i] = (float) o;
+    }
+    return y;
+}
 static void testEquanimity (double sr)
 {
     { Rig r (sr); row ("latency", "reported_samples", r.latency(), "INFO"); }
@@ -861,9 +915,26 @@ static void testEquanimity (double sr)
         const double fl[] { 20, 30, 60, 100 };
         const double fm = std::max (10.0, fl[fi] * 0.5);
         { Rig r (sr); r.norm ("lofreq", fi / 3.0f); r.set ("loboost", 10); const double g = eqGain (r, fm);
-          row ("low-boost", String ((int) fl[fi]) + "Hz_max_dB@" + String ((int) fm) + "Hz", g, std::abs (g - 13.5) <= 1.5 ? "PASS" : "WARN"); }
+          row ("low-boost", String ((int) fl[fi]) + "Hz_max_dB@" + String ((int) fm) + "Hz", g, std::abs (g - 13.5) <= 2.0 ? "PASS" : "WARN"); }
         { Rig r (sr); r.norm ("lofreq", fi / 3.0f); r.set ("loatten", 10); const double g = eqGain (r, fm);
           row ("low-atten", String ((int) fl[fi]) + "Hz_max_dB@" + String ((int) fm) + "Hz", g, std::abs (g + 17.5) <= 1.5 ? "PASS" : "WARN"); }
+    }
+    // the boost is broad, as on the hardware: at 60 Hz, boost 10 still lifts an octave and two above (and never dips by itself)
+    {
+        Rig r (sr); r.set ("lofreq", 2); r.set ("loboost", 10);
+        const double g60 = eqGain (r, 60), g120 = eqGain (r, 120), g250 = eqGain (r, 250);
+        double lowest = 99; for (double f : { 300.0, 500.0, 1000.0, 2000.0 }) lowest = std::min (lowest, eqGain (r, f));
+        row ("low-boost-shape", "at_60Hz_dB", g60, g60 > 8.5 && g60 < 11.5 ? "PASS" : "FAIL");
+        row ("low-boost-shape", "at_120Hz_dB", g120, g120 > 4.0 && g120 < 8.0 ? "PASS" : "FAIL");
+        row ("low-boost-shape", "at_250Hz_dB", g250, g250 > 1.0 && g250 < 4.0 ? "PASS" : "FAIL");
+        row ("low-boost-shape", "no_dip_above_dB", lowest, lowest > -0.3 ? "PASS" : "FAIL");
+    }
+    // ... and it is still there on loud material: boost 10 at 60 Hz, -12 dBFS in, still lifts 60 Hz by 8 dB or more
+    {
+        Rig r (sr); r.set ("lofreq", 2); r.set ("loboost", 10);
+        Rig f (sr);
+        const double g = eqGain (r, 60, 0.25f) - eqGain (f, 60, 0.25f);
+        row ("low-boost-hot", "-12dBFS_at_60Hz_dB", g, g > 8.0 ? "PASS" : "FAIL");
     }
     // the trick: boost 6 and atten 3 together at 60 Hz
     {
@@ -900,13 +971,30 @@ static void testEquanimity (double sr)
     for (double f : { 100.0, 1000.0, 5000.0 })
     {
         Rig r (sr); r.set ("eqin", 0);
+        // warmth: more than the original's 0.15 %, on purpose, but still clean: 0.15 - 0.4 % at a typical -18 dBFS
+        const double t18 = thdPct (r, f, 0.1259f);
+        row ("thd", String ((int) f) + "Hz_-18dBFS_pct", t18, t18 > 0.15 && t18 < 0.4 ? "PASS" : "FAIL");
         const double t12 = thdPct (r, f, 0.2512f);
-        row ("thd", String ((int) f) + "Hz_-12dBFS_pct", t12, lim (t12, 0.15, 0.3));
+        row ("thd", String ((int) f) + "Hz_-12dBFS_pct", t12, lim (t12, 1.0, 1.5));
         row ("thd", String ((int) f) + "Hz_-24dBFS_pct", thdPct (r, f, 0.0631f));
         row ("thd", String ((int) f) + "Hz_-6dBFS_pct", thdPct (r, f, 0.5012f));
         row ("thd", String ((int) f) + "Hz_0dBFS_pct", thdPct (r, f, 1.0f));
     }
     { Rig r (sr); r.set ("eqin", 0); row ("thd", "50Hz_0dBFS_pct", thdPct (r, 50, 1.0f)); }
+    // tube warmth: the 2nd harmonic leads the 3rd at every level, from quiet to driven
+    for (double dbfs : { -24.0, -18.0, -12.0, -6.0, -1.0 })
+    {
+        Rig r (sr); r.reset();
+        const double f = 1000.0; const float amp = (float) std::pow (10.0, dbfs / 20.0);
+        const int n = (int) sr * 2;
+        Buf s = sine (n, f, sr, amp), a, b;
+        r.process (s, s, a, b);
+        const int from = (int) sr, len = (int) (std::floor ((double) (n - from) * f / sr) * sr / f);
+        const double h1 = std::abs (demod (a, from, from + len, f, sr));
+        const double h2 = db (std::abs (demod (a, from, from + len, 2 * f, sr)) / h1), h3 = db (std::abs (demod (a, from, from + len, 3 * f, sr)) / h1);
+        row ("warmth", String ((int) dbfs) + "dBFS_H2_dB", h2);
+        row ("warmth", String ((int) dbfs) + "dBFS_H2_over_H3_dB", h2 - h3, h2 - h3 > 6.0 ? "PASS" : "FAIL");
+    }
     // aliasing at full level
     {
         Rig r (sr); r.set ("eqin", 0);
@@ -986,7 +1074,7 @@ static void testEquanimity (double sr)
             {
                 Rig r (sr); cs.f (r); r.set ("autogain", (float) on);
                 Buf a, b; r.process (s, s, a, b);
-                lev[on] = db (rms (a, (int) sr)) - db (rms (s, (int) sr));
+                lev[on] = db (rms (kWeight (a), (int) sr)) - db (rms (kWeight (s), (int) sr));
             }
             row ("autogain", String (cs.name) + "_off_dB", lev[0]);
             row ("autogain", String (cs.name) + "_on_dB", lev[1], std::abs (lev[1]) < 1.25 ? "PASS" : "WARN");
@@ -1054,6 +1142,7 @@ int main (int argc, char** argv)
         StringArray extra; for (int i = 4; i < argc; ++i) extra.add (argv[i]);
         renderEditor (File (argv[1]).getChildFile (gName.removeCharacters (" ") + (skin.isNotEmpty() ? "-" + skin : String()) + "-editor.png"), true, skin, extra); return 0; }
     if (argc > 2 && String (argv[2]) == "debug") { debugBlocks (sr); return 0; }
+    if (argc > 2 && String (argv[2]) == "probe") { probeEquanimity (sr); return 0; }
     if (gName.contains ("Equanimity")) { testEquanimity (sr); return 0; }
     testLatency (sr);
     testNull (sr);

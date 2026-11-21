@@ -70,6 +70,9 @@ private:
         float loBoost = 0, loAtten = 0, hiBoost = 0, bw = 5, hiAtten = 0;   // dB / 0..10
         float mLoPk = 0, mDip = 0, mHiPk = 0;                               // the midrange peaks and dip, 0..10
         int loFreq = 2, hiFreq = 4, attSel = 1, mLoFreq = 2, mDipFreq = 4, mHiFreq = 2;
+        // the selectors' frequencies in Hz: low, high peak, high atten, mid low, mid dip, mid high. A switch jumps, but the filter
+        // glides to its new frequency over a few milliseconds, so turning a selector on a playing track doesn't click
+        double hz[6] { 60, 8000, 10000, 500, 1000, 3000 };
     };
     void designEq (EqChannel& e, const Settings& s) const;
     static double hiFreqHz (int i);
