@@ -114,6 +114,18 @@ func findBrowser() (string, []string) {
 	pf := os.Getenv("ProgramFiles")
 	pf86 := os.Getenv("ProgramFiles(x86)")
 	la := os.Getenv("LOCALAPPDATA")
+	// A separate profile makes Edge/Chrome start a fresh full-screen window
+	// even if the browser is already open in the background.
+	profile := "--user-data-dir=" + filepath.Join(appDataDir(), "browser-profile")
+	edge := []string{
+		filepath.Join(pf, "Microsoft", "Edge", "Application", "msedge.exe"),
+		filepath.Join(pf86, "Microsoft", "Edge", "Application", "msedge.exe"),
+	}
+	for _, p := range edge {
+		if fileExists(p) {
+			return p, []string{"--kiosk", "--edge-kiosk-type=fullscreen", "--no-first-run", profile}
+		}
+	}
 	firefox := []string{
 		filepath.Join(pf, "Mozilla Firefox", "firefox.exe"),
 		filepath.Join(pf86, "Mozilla Firefox", "firefox.exe"),
@@ -131,7 +143,7 @@ func findBrowser() (string, []string) {
 	}
 	for _, p := range chrome {
 		if fileExists(p) {
-			return p, []string{"--kiosk", "--no-first-run"}
+			return p, []string{"--kiosk", "--no-first-run", profile}
 		}
 	}
 	return "", nil
