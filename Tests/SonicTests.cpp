@@ -869,6 +869,19 @@ static void probeEquanimity (double sr)
             std::printf ("   %5.0f Hz %+5.0f dBFS: THD %.4f %%  H2 %6.1f  H3 %6.1f  H4 %6.1f  H5 %6.1f dB (rel. fundamental)\n", f, dbfs,
                          100.0 * std::sqrt (acc) / h1, db (hs[0] / h1), db (hs[1] / h1), db (hs[2] / h1), db (hs[3] / h1));
         }
+    // every boost and cut, at its default frequency, as the knob is turned: 2, 5, 8, 10
+    struct K { const char* id; std::vector<double> freqs; };
+    for (auto k : std::vector<K> { { "loboost", { 30, 60, 120, 250 } }, { "loatten", { 30, 60, 120, 250 } }, { "hiboost", { 3000, 5000, 8000, 12000 } },
+                                   { "hiatten", { 5000, 10000, 15000 } }, { "mlpeak", { 250, 500, 1000 } }, { "mdip", { 500, 1000, 2000 } }, { "mhpeak", { 1500, 3000, 6000 } } })
+    {
+        for (float v : { 2.0f, 5.0f, 8.0f, 10.0f })
+        {
+            Rig r (sr); r.set (k.id, v); Rig f (sr);
+            std::printf ("   %-8s %4.1f:", k.id, v);
+            for (double fr : k.freqs) std::printf ("  %6.0f Hz %+6.2f", fr, eqGain (r, fr, 0.1f) - eqGain (f, fr, 0.1f));
+            std::printf ("\n");
+        }
+    }
     for (int ag = 0; ag < 2; ++ag)
     {
         Rig r (sr); r.set ("autogain", ag); r.set ("lofreq", 2); r.set ("loboost", 10);
@@ -924,9 +937,10 @@ static void testEquanimity (double sr)
         Rig r (sr); r.set ("lofreq", 2); r.set ("loboost", 10);
         const double g60 = eqGain (r, 60), g120 = eqGain (r, 120), g250 = eqGain (r, 250);
         double lowest = 99; for (double f : { 300.0, 500.0, 1000.0, 2000.0 }) lowest = std::min (lowest, eqGain (r, f));
-        row ("low-boost-shape", "at_60Hz_dB", g60, g60 > 8.5 && g60 < 11.5 ? "PASS" : "FAIL");
-        row ("low-boost-shape", "at_120Hz_dB", g120, g120 > 4.0 && g120 < 8.0 ? "PASS" : "FAIL");
-        row ("low-boost-shape", "at_250Hz_dB", g250, g250 > 1.0 && g250 < 4.0 ? "PASS" : "FAIL");
+        // the hardware: nearly all of the boost at the frequency chosen, starting about six times higher
+        row ("low-boost-shape", "at_60Hz_dB", g60, g60 > 11.0 && g60 < 13.5 ? "PASS" : "FAIL");
+        row ("low-boost-shape", "at_120Hz_dB", g120, g120 > 7.0 && g120 < 10.5 ? "PASS" : "FAIL");
+        row ("low-boost-shape", "at_250Hz_dB", g250, g250 > 1.5 && g250 < 4.5 ? "PASS" : "FAIL");
         row ("low-boost-shape", "no_dip_above_dB", lowest, lowest > -0.3 ? "PASS" : "FAIL");
     }
     // ... and it is still there on loud material: boost 10 at 60 Hz, -12 dBFS in, still lifts 60 Hz by 8 dB or more
@@ -935,6 +949,22 @@ static void testEquanimity (double sr)
         Rig f (sr);
         const double g = eqGain (r, 60, 0.25f) - eqGain (f, 60, 0.25f);
         row ("low-boost-hot", "-12dBFS_at_60Hz_dB", g, g > 8.0 ? "PASS" : "FAIL");
+    }
+    // the dials are audio taper, as on the hardware: a quarter of the way up (about 9 o'clock) already does a lot
+    {
+        Rig r (sr); r.set ("lofreq", 2); r.set ("loboost", 2.5f);
+        const double g = eqGain (r, 60);
+        row ("taper", "low_boost_2.5_at_60Hz_dB", g, g > 5.0 ? "PASS" : "FAIL");
+        Rig h (sr); h.set ("hifreq", 4); h.set ("hiboost", 2.5f);
+        const double gh = eqGain (h, 8000);
+        row ("taper", "high_boost_2.5_at_8k_dB", gh, gh > 5.0 ? "PASS" : "FAIL");
+        // ... and the classic trick at 2.5 / 2.5: a few dB more at the bottom, a dip of about 2 dB above (Sound On Sound's measurement)
+        Rig t (sr); t.set ("lofreq", 2); t.set ("loboost", 2.5f); t.set ("loatten", 2.5f);
+        double bump = -99, dip = 99;
+        for (double f : { 20.0, 30.0, 40.0, 60.0 }) bump = std::max (bump, eqGain (t, f));
+        for (double f : { 150.0, 200.0, 250.0, 300.0, 400.0, 500.0 }) dip = std::min (dip, eqGain (t, f));
+        row ("taper", "trick_2.5_bump_dB", bump, bump > 1.5 && bump < 5.0 ? "PASS" : "FAIL");
+        row ("taper", "trick_2.5_dip_dB", dip, dip < -1.0 && dip > -4.0 ? "PASS" : "FAIL");
     }
     // the trick: boost 6 and atten 3 together at 60 Hz
     {
@@ -950,9 +980,13 @@ static void testEquanimity (double sr)
         const double fh[] { 3000, 4000, 5000, 6000, 8000, 10000, 12000, 16000 };
         for (int i = 0; i < 8; ++i)
         {
-            Rig r (sr); r.norm ("hifreq", i / 7.0f); r.set ("hiboost", 10); r.set ("bw", 5);
+            // the hardware: +18 dB when sharp, +9 dB when broad
+            Rig r (sr); r.norm ("hifreq", i / 7.0f); r.set ("hiboost", 10); r.set ("bw", 0);
             const double g = eqGain (r, fh[i]);
-            row ("high-boost", String ((int) fh[i]) + "Hz_dB", g, std::abs (g - 18.0) <= 1.0 ? "PASS" : "WARN");
+            row ("high-boost", String ((int) fh[i]) + "Hz_sharp_dB", g, std::abs (g - 18.0) <= 1.0 ? "PASS" : "WARN");
+            Rig b (sr); b.norm ("hifreq", i / 7.0f); b.set ("hiboost", 10); b.set ("bw", 10);
+            const double gb = eqGain (b, fh[i]);
+            row ("high-boost", String ((int) fh[i]) + "Hz_broad_dB", gb, std::abs (gb - 9.0) <= 1.5 ? "PASS" : "WARN");
         }
         for (float bw : { 0.0f, 10.0f })
         {
@@ -965,7 +999,10 @@ static void testEquanimity (double sr)
     {
         Rig r (sr); r.norm ("attensel", i / 2.0f); r.set ("hiatten", 10);
         row ("high-atten", String (5 << i) + "k_at_20k_dB", eqGain (r, 20000));
-        row ("high-atten", String (5 << i) + "k_at_1k_dB", eqGain (r, 1000), std::abs (eqGain (r, 1000)) < 0.5 ? "PASS" : "WARN");
+        // the hardware: most of the 16 dB at the frequency chosen, starting about an eighth of the way down
+        const double fsel = 5000.0 * (1 << i), atSel = eqGain (r, jmin (fsel, 18000.0)), eighth = eqGain (r, fsel / 8.0);
+        row ("high-atten", String (5 << i) + "k_at_its_frequency_dB", atSel, atSel < -11.0 && atSel > -17.5 ? "PASS" : "WARN");
+        row ("high-atten", String (5 << i) + "k_an_eighth_down_dB", eighth, eighth < -0.3 && eighth > -4.0 ? "PASS" : "WARN");
     }
     // distortion at the reference level (+10 dBm ~ -12 dBFS), spec <= 0.15 %
     for (double f : { 100.0, 1000.0, 5000.0 })
@@ -1026,7 +1063,7 @@ static void testEquanimity (double sr)
         row ("path", "mid_bank_on_side_dB", side, std::abs (side) < 0.5 ? "PASS" : "FAIL");
         Rig q (sr); q.set ("msmode", 1); q.set ("s_hifreq", 4); q.set ("s_hiboost", 10);
         const double sd = eqGain (q, 8000, 0.03f, true), md = eqGain (q, 8000, 0.03f, false);
-        row ("path", "side_bank_on_side_dB", sd, sd > 14 ? "PASS" : "FAIL");
+        row ("path", "side_bank_on_side_dB", sd, sd > 10 ? "PASS" : "FAIL");
         row ("path", "side_bank_on_mid_dB", md, std::abs (md) < 0.5 ? "PASS" : "FAIL");
         // L/R mode ignores the M/S banks
         Rig w (sr); w.set ("msmode", 0); w.set ("m_loboost", 10); const double lr = eqGain (w, 30);
