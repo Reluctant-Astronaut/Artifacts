@@ -149,7 +149,7 @@ void EquanimityProcessor::designEq (EqChannel& e, const Settings& s) const
     };
     const double fl = s.hz[0];
     const double tb = boostTaper (s.loBoost), ta = attenTaper (s.loAtten);
-    shelfLow (e.loBoost, fl * 2.6, 15.0 * tb, 0.6);                                  // broad, no dip of its own (60 Hz, 10: +13.8 dB at 60, as the UAD model)
+    shelfLow (e.loBoost, fl * 2.6, 15.9 * tb, 0.6);                                  // broad, no dip of its own (60 Hz, 10: +14.6 dB at 60, as the UAD model on pink noise)
     // The atten and the boost share one passive network. On its own the atten is a low shelf cut (up to -17.5 dB). With the boost
     // up, the network turns it into a dip above the boost: the level at the frequency chosen hardly moves, the curve is
     // reshaped instead (the Pultec trick). So the atten is a shelf and a dip, weighed by how far the boost is up:
