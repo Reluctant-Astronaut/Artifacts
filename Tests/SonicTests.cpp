@@ -982,10 +982,10 @@ static void testEquanimity (double sr)
         const double g60 = eqGain (r, 60), g120 = eqGain (r, 120), g250 = eqGain (r, 250);
         double lowest = 99; for (double f : { 300.0, 500.0, 1000.0, 2000.0 }) lowest = std::min (lowest, eqGain (r, f));
         // the hardware: nearly all of the boost at the frequency chosen, starting about six times higher
-        // (and matched to the UAD model's curve: a smooth slope up from the frequency chosen)
-        row ("low-boost-shape", "at_60Hz_dB", g60, g60 > 10.0 && g60 < 13.0 ? "PASS" : "FAIL");
-        row ("low-boost-shape", "at_120Hz_dB", g120, g120 > 5.0 && g120 < 8.0 ? "PASS" : "FAIL");
-        row ("low-boost-shape", "at_250Hz_dB", g250, g250 > 1.0 && g250 < 3.5 ? "PASS" : "FAIL");
+        // (at 60 Hz the same as the UAD model gives a 60 Hz tone: both read 17.9 dBFS max in the user's comparison)
+        row ("low-boost-shape", "at_60Hz_dB", g60, g60 > 11.5 && g60 < 13.5 ? "PASS" : "FAIL");
+        row ("low-boost-shape", "at_120Hz_dB", g120, g120 > 7.0 && g120 < 10.5 ? "PASS" : "FAIL");
+        row ("low-boost-shape", "at_250Hz_dB", g250, g250 > 1.5 && g250 < 4.5 ? "PASS" : "FAIL");
         row ("low-boost-shape", "no_dip_above_dB", lowest, lowest > -0.3 ? "PASS" : "FAIL");
     }
     // ... and it is still there on loud material: boost 10 at 60 Hz, -12 dBFS in, still lifts 60 Hz by 8 dB or more

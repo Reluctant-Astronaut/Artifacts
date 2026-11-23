@@ -115,7 +115,7 @@ double EquanimityProcessor::attSelHz (int i)  { static const double f[] { 5000, 
 
 // The EQP-1A, as measured on the hardware:
 //  - Low boost: a broad shelf that has almost all of its 13.5 dB at the frequency chosen and starts about six times higher
-//    (60 Hz, boost 10: +11.1 dB at 60, +6.7 at 120, +2.2 at 250: a smooth slope up from the frequency chosen). Low atten: a shelf of up to -17.5 dB that turns over higher still,
+//    (60 Hz, boost 10: +12.4 dB at 60, +9 at 120, +3 at 250; on a 60 Hz tone it gives the same level as the UAD model). Low atten: a shelf of up to -17.5 dB that turns over higher still,
 //    so the two together give more low end with a dip above it (the Pultec trick; at 60 Hz the dip is near 250 - 300 Hz).
 //  - The dials are audio-taper pots: much of each control's effect comes in the first quarter of its travel, the boost faster
 //    than the atten (which is why, with both at the same number, the boost wins at the bottom: about +3 dB and a -2 dB dip at 2.5).
@@ -149,11 +149,11 @@ void EquanimityProcessor::designEq (EqChannel& e, const Settings& s) const
     };
     const double fl = s.hz[0];
     const double tb = boostTaper (s.loBoost), ta = attenTaper (s.loAtten);
-    shelfLow (e.loBoost, fl * 2.0, 13.5 * tb, 0.55);                                 // broad and smooth, no dip of its own
+    shelfLow (e.loBoost, fl * 2.6, 13.5 * tb, 0.6);                                  // broad, no dip of its own
     // the atten turns over well above the boost, and in the shared network it gives way as the boost comes up: so boost and
     // atten together (same number) keep a lift at the bottom with a dip above it, the Pultec trick
     // (2.5 / 2.5: about +3 dB and -2 dB near 300 Hz, as measured on the hardware; 5 / 5: +3.5 and -4.3)
-    shelfLow (e.loAtten, fl * 6.5, -17.5 * ta * (1.0 - 0.45 * tb), 0.9);
+    shelfLow (e.loAtten, fl * 7.5, -17.5 * ta * (1.0 - 0.45 * tb), 0.9);
     // bandwidth: sharp (0) is a narrow peak of up to +18 dB, broad (10) a wide one of up to +9 dB
     const double q = 2.5 * std::pow (0.45 / 2.5, s.bw / 10.0);                       // 2.5 ... 0.45
     peak (e.hiPeak, s.hz[1], (18.0 - 9.0 * s.bw / 10.0) * boostTaper (s.hiBoost), q);
@@ -303,7 +303,7 @@ void EquanimityProcessor::processBlock (AudioBuffer<float>& buffer, MidiBuffer&)
                     const double sag = 1.0 + 0.15 * v.env;
                     // 12AX7: biased off centre, so the 2nd harmonic leads and the 3rd stays well below it at any level. The amounts are
                     // matched to the UAD model on a 60 Hz tone with the low boost full up: 2nd about -50 dB, 3rd about -64 dB near full scale
-                    s = triode (s, 0.023 * sag, 0.45);
+                    s = triode (s, 0.0195 * sag, 0.45);
                     s = triode (s, 0.08 * sag, -0.05);                                    // 12AU7: plenty of headroom, a little odd order when driven
                     v.lowband += aLow * (s - v.lowband);                                    // output transformer: the iron gives in first at the bottom
                     s += satLow (v.lowband) - v.lowband;
