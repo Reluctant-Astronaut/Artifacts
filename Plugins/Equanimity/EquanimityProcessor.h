@@ -63,7 +63,7 @@ private:
         void clear() { z1 = z2 = 0; }
     };
     // The EQ of one channel: the low network (boost shelf + atten shelf, one coupled pair), the high peak, the high atten shelf
-    struct EqChannel { Biquad loBoost, loAtten, mLo, mDip, mHi, hiPeak, hiAtten; double autoGain = 1.0; };
+    struct EqChannel { Biquad loBoost, loAtten, loNotch, mLo, mDip, mHi, hiPeak, hiAtten; double autoGain = 1.0; };
     // The dial settings of one bank, smoothed
     struct Settings
     {

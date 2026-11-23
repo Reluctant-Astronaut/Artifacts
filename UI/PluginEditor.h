@@ -9,6 +9,8 @@
 struct KintsugiFonts
 {
     static juce::Font serif (float height, bool bold = true);
+    // at small window sizes the panel's writing is drawn a little larger than its share, so it stays readable
+    static inline float boost = 1.0f;
 };
 
 class KintsugiLookAndFeel : public juce::LookAndFeel_V4
@@ -150,6 +152,8 @@ public:
     static inline int caseStyleOverride = -1;   // for previews
     static inline int mockVariant = ARTIFACTS_VARIANT;   // 1 Kintsugi, 2 Console RA-1, 3 Duality, 4 Anemoia, 5 Equanimity (set per plugin at build time)
     bool sizeReady = false, laidOut = false;
+    float pendingTextBoost = 1.0f; double resizeAt = 0;   // re-drawn with larger writing once resizing stops
+    void applyTextBoost (float b);
     void layoutPanel();   // places every part at the design size (resized() then scales the lot)
     float uiScale = 1.0f;   // the window's size relative to the design size (the panel is drawn at the design size and scaled)
     static int designW();

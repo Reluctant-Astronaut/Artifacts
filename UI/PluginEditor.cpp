@@ -60,7 +60,8 @@ juce::Font KintsugiFonts::serif (float height, bool bold)
 {
     static auto reg  = juce::Typeface::createSystemTypefaceFor (BinaryData::OldStandardRegular_ttf, BinaryData::OldStandardRegular_ttfSize);
     static auto bld  = juce::Typeface::createSystemTypefaceFor (BinaryData::OldStandardBold_ttf, BinaryData::OldStandardBold_ttfSize);
-    return juce::Font (juce::FontOptions (bold ? bld : reg).withHeight (height));
+    // only the small writing grows (names, values, scales): titles and the maker's name keep their size
+    return juce::Font (juce::FontOptions (bold ? bld : reg).withHeight (height < 16.0f ? height * boost : height));
 }
 
 //==============================================================================
@@ -1266,13 +1267,13 @@ namespace
                 {
                     const float a = rp.startAngleRadians + (float) e / (float) (nl - 1) * (rp.endAngleRadians - rp.startAngleRadians);
                     const auto pt = c.getPointOnCircumference (R + 19.0f, a);
-                    g.drawText (stepLabels[i][e], Rectangle<float> (50, 12).withCentre (pt), Justification::centred);
+                    g.drawFittedText (stepLabels[i][e], Rectangle<float> (58, 13).withCentre (pt).toNearestInt(), Justification::centred, 1, 0.7f);
                 }
             }
 
             g.setFont (KintsugiFonts::serif (11.5f).withExtraKerningFactor (0.08f));
-            g.drawText (knobNames[i].toUpperCase(), Rectangle<int> (r.getCentreX() - 70, r.getBottom() + 1, 140, 16),
-                        Justification::centred);
+            g.drawFittedText (knobNames[i].toUpperCase(), Rectangle<int> (r.getCentreX() - 55, r.getBottom() + 1, 110, 16),
+                              Justification::centred, 1, 0.72f);   // never wider than its column, even with larger writing
         }
     }
 
@@ -3233,8 +3234,30 @@ ArtifactsEditor::Knob& ArtifactsEditor::addSwitch (const juce::String& paramId, 
     return k;
 }
 
+void ArtifactsEditor::applyTextBoost (float b)
+{
+    if (std::abs (b - KintsugiFonts::boost) < 0.01f && ! plate.isNull()) return;
+    KintsugiFonts::boost = b;
+    for (auto& k : knobs)   // the value readouts: their own size times the boost
+    {
+        auto& props = k->readout.getProperties();
+        if (! props.contains ("baseH")) props.set ("baseH", k->readout.getFont().getHeight() / 1.0f);
+        k->readout.setFont (k->readout.getFont().withHeight ((float) (double) props["baseH"] * b));
+    }
+    if (laidOut)
+    {
+        renderPlate();
+        plateArea.image = &plate;
+        renderHousing();
+    }
+    repaint();
+    plateArea.repaint();
+}
+
 void ArtifactsEditor::timerCallback()
 {
+    if (std::abs (pendingTextBoost - KintsugiFonts::boost) > 0.01f && juce::Time::getMillisecondCounterHiRes() - resizeAt > 250.0)
+        applyTextBoost (pendingTextBoost);
     bool cOn = paramValue ("consoleon", 1.0f) > 0.5f;
     bool vOn = paramValue ("valveon", 1.0f) > 0.5f;
     bool tOn = paramValue ("tapeon", 1.0f) > 0.5f;
@@ -3389,6 +3412,11 @@ void ArtifactsEditor::resized()
         plateArea.image = &plate;
         renderHousing();
     }
+    // below about 85 % the writing is drawn larger than its share (up to 1.3 times), so values and names stay readable;
+    // the plate is re-drawn with it once the resizing has stopped
+    pendingTextBoost = juce::jlimit (1.0f, 1.3f, std::round (0.85f / uiScale * 20.0f) / 20.0f);
+    resizeAt = juce::Time::getMillisecondCounterHiRes();
+    if (! sizeReady || ! isShowing()) applyTextBoost (pendingTextBoost);
     // scale the whole panel to the window (the resize corner itself stays as it is)
     const auto t = juce::AffineTransform::scale (uiScale);
     for (auto* ch : getChildren())
@@ -4236,7 +4264,10 @@ void ArtifactsEditor::renderPlate()
        #endif
         pg.setFont (KintsugiFonts::serif (8.5f).withExtraKerningFactor (0.42f));
         const int nameCx = mockVariant == 2 ? 262 : W / 2;
-        pg.drawText ("RELUCTANT", nameCx - 110, H - 56, 220, 12, Justification::centred);
+        { const auto keep = KintsugiFonts::boost; KintsugiFonts::boost = 1.0f;   // the maker's name keeps its own size
+          pg.setFont (KintsugiFonts::serif (8.5f).withExtraKerningFactor (0.42f));
+          pg.drawText ("RELUCTANT", nameCx - 110, H - 56, 220, 12, Justification::centred);
+          KintsugiFonts::boost = keep; }
         pg.setFont (KintsugiFonts::serif (17.0f).withExtraKerningFactor (0.12f));
         pg.drawText ("ASTRONAUT", nameCx - 130, H - 46, 260, 22, Justification::centred);
 
@@ -4277,8 +4308,8 @@ void ArtifactsEditor::renderPlate()
             {
                 const float prop = (float) k->slider.valueToProportionOfLength (value);
                 const float a = rp.startAngleRadians + prop * (rp.endAngleRadians - rp.startAngleRadians);
-                pg.drawText (text, Rectangle<float> (34.0f, 11.0f).withCentre (c.getPointOnCircumference (R + 21.0f, a)),
-                             Justification::centred);
+                pg.drawFittedText (text, Rectangle<float> (46.0f, 13.0f).withCentre (c.getPointOnCircumference (R + 21.0f, a)).toNearestInt(),
+                                   Justification::centred, 1, 0.75f);
             }
         }
 
@@ -4294,16 +4325,16 @@ void ArtifactsEditor::renderPlate()
             // EQ IN under its lever and lamp, and SOLO under its lever
             const auto sb = consoleSwitch.getBounds();
             pg.setFont (KintsugiFonts::serif (13.0f).withExtraKerningFactor (0.2f));
-            pg.drawText ("EQ IN", Rectangle<int> (consoleLamp.getBounds().getCentreX() - 30, sb.getBottom() + 4, 100, 18), Justification::centred);
+            pg.drawText ("EQ IN", Rectangle<int> (consoleLamp.getBounds().getCentreX() - 60, sb.getBottom() + 4, 160, 18), Justification::centred, false);
             const auto ab = tapeSwitch.getBounds();
             pg.setFont (KintsugiFonts::serif (13.0f).withExtraKerningFactor (0.2f));
-            pg.drawText ("AUTO GAIN", Rectangle<int> (tapeLamp.getBounds().getCentreX() - 50, ab.getBottom() + 4, 120, 18), Justification::centred);
+            pg.drawText ("AUTO GAIN", Rectangle<int> (tapeLamp.getBounds().getCentreX() - 70, ab.getBottom() + 4, 160, 18), Justification::centred, false);
             const auto nb = noiseSwitch.getBounds();
             pg.setFont (KintsugiFonts::serif (13.0f).withExtraKerningFactor (0.2f));
-            pg.drawText ("NOISE", Rectangle<int> (noiseLamp.getBounds().getCentreX() - 30, nb.getBottom() + 4, 100, 18), Justification::centred);
+            pg.drawText ("NOISE", Rectangle<int> (noiseLamp.getBounds().getCentreX() - 60, nb.getBottom() + 4, 160, 18), Justification::centred, false);
             const auto vb = valveSwitch.getBounds();
             pg.setFont (KintsugiFonts::serif (13.0f).withExtraKerningFactor (0.2f));
-            pg.drawText ("SOLO", Rectangle<int> (valveLamp.getBounds().getCentreX() - 30, vb.getBottom() + 4, 100, 18), Justification::centred);
+            pg.drawText ("SOLO", Rectangle<int> (valveLamp.getBounds().getCentreX() - 60, vb.getBottom() + 4, 160, 18), Justification::centred, false);
         }
         if (mockVariant == 4)
         {

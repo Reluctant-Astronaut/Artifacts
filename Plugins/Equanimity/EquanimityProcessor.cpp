@@ -77,7 +77,7 @@ static inline double triode (double x, double k, double b)
     const double t0 = std::tanh (b), slope = 1.0 - t0 * t0;
     return (std::tanh (k * x + b) - t0) / (k * slope);
 }
-static inline double satLow (double l) { return std::tanh (0.12 * l) / 0.12; }   // gentle: boosted bass thickens, isn't crushed
+static inline double satLow (double l) { return std::tanh (0.08 * l) / 0.08; }   // gentle: boosted bass thickens, isn't crushed
 
 EquanimityProcessor::EquanimityProcessor()
     : ArtifactsProcessor (BusesProperties()
@@ -115,7 +115,7 @@ double EquanimityProcessor::attSelHz (int i)  { static const double f[] { 5000, 
 
 // The EQP-1A, as measured on the hardware:
 //  - Low boost: a broad shelf that has almost all of its 13.5 dB at the frequency chosen and starts about six times higher
-//    (60 Hz, boost 10: +12.4 dB at 60, +9 at 120, +3 at 250; on a 60 Hz tone it gives the same level as the UAD model). Low atten: a shelf of up to -17.5 dB that turns over higher still,
+//    (60 Hz, boost 10: +13.8 dB at 60, +9.9 at 120, +3.5 at 250, matched on a 60 Hz tone to the UAD model). Low atten: a shelf of up to -17.5 dB that turns over higher still,
 //    so the two together give more low end with a dip above it (the Pultec trick; at 60 Hz the dip is near 250 - 300 Hz).
 //  - The dials are audio-taper pots: much of each control's effect comes in the first quarter of its travel, the boost faster
 //    than the atten (which is why, with both at the same number, the boost wins at the bottom: about +3 dB and a -2 dB dip at 2.5).
@@ -123,7 +123,7 @@ double EquanimityProcessor::attSelHz (int i)  { static const double f[] { 5000, 
 //    at the frequency chosen and starts about an eighth of the way down (5 kHz: from about 600 Hz).
 static double boostTaper (double v) { return std::pow (jlimit (0.0, 10.0, v) / 10.0, 0.5); }
 static double attenTaperHigh (double v) { return std::pow (jlimit (0.0, 10.0, v) / 10.0, 0.8); }
-static double attenTaper (double v) { return jlimit (0.0, 10.0, v) / 10.0; }
+static double attenTaper (double v) { return std::pow (jlimit (0.0, 10.0, v) / 10.0, 0.8); }
 
 void EquanimityProcessor::designEq (EqChannel& e, const Settings& s) const
 {
@@ -149,11 +149,13 @@ void EquanimityProcessor::designEq (EqChannel& e, const Settings& s) const
     };
     const double fl = s.hz[0];
     const double tb = boostTaper (s.loBoost), ta = attenTaper (s.loAtten);
-    shelfLow (e.loBoost, fl * 2.6, 13.5 * tb, 0.6);                                  // broad, no dip of its own
-    // the atten turns over well above the boost, and in the shared network it gives way as the boost comes up: so boost and
-    // atten together (same number) keep a lift at the bottom with a dip above it, the Pultec trick
-    // (2.5 / 2.5: about +3 dB and -2 dB near 300 Hz, as measured on the hardware; 5 / 5: +3.5 and -4.3)
-    shelfLow (e.loAtten, fl * 7.5, -17.5 * ta * (1.0 - 0.45 * tb), 0.9);
+    shelfLow (e.loBoost, fl * 2.6, 15.0 * tb, 0.6);                                  // broad, no dip of its own (60 Hz, 10: +13.8 dB at 60, as the UAD model)
+    // The atten and the boost share one passive network. On its own the atten is a low shelf cut (up to -17.5 dB). With the boost
+    // up, the network turns it into a dip above the boost: the level at the frequency chosen hardly moves, the curve is
+    // reshaped instead (the Pultec trick). So the atten is a shelf and a dip, weighed by how far the boost is up:
+    // 10 / 10 at 60 Hz: -0.4 dB at 60 Hz, a -7.7 dB dip near 300 Hz; 2.5 / 2.5: a lift of a few dB with -2 dB near 300 Hz.
+    shelfLow (e.loAtten, fl * 5.0, -17.5 * ta * (1.0 - tb), 0.6);
+    peak (e.loNotch, fl * 5.0, -10.0 * ta * tb, 1.2);
     // bandwidth: sharp (0) is a narrow peak of up to +18 dB, broad (10) a wide one of up to +9 dB
     const double q = 2.5 * std::pow (0.45 / 2.5, s.bw / 10.0);                       // 2.5 ... 0.45
     peak (e.hiPeak, s.hz[1], (18.0 - 9.0 * s.bw / 10.0) * boostTaper (s.hiBoost), q);
@@ -185,7 +187,7 @@ double EquanimityProcessor::loudnessComp (const EqChannel& e) const
     for (int i = 0; i < N; ++i)
     {
         const double f = 20.0 * std::pow (20000.0 / 20.0, (double) i / (N - 1)), w = MathConstants<double>::twoPi * f / (sr * 4.0);
-        const double p = e.loBoost.mag2 (w) * e.loAtten.mag2 (w) * e.mLo.mag2 (w) * e.mDip.mag2 (w) * e.mHi.mag2 (w) * e.hiPeak.mag2 (w) * e.hiAtten.mag2 (w);
+        const double p = e.loBoost.mag2 (w) * e.loAtten.mag2 (w) * e.loNotch.mag2 (w) * e.mLo.mag2 (w) * e.mDip.mag2 (w) * e.mHi.mag2 (w) * e.hiPeak.mag2 (w) * e.hiAtten.mag2 (w);
         const double weight = kWeight2 (f);
         acc += weight * p;
         wsum += weight;
@@ -203,7 +205,7 @@ void EquanimityProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     sOut.reset (sampleRate, 0.03);
     sOut.setCurrentAndTargetValue (Decibels::decibelsToGain (pOutput->load()));
     for (auto& v : valve) v = {};
-    for (auto& e : eq) { e.loBoost.clear(); e.loAtten.clear(); e.mLo.clear(); e.mDip.clear(); e.mHi.clear(); e.hiPeak.clear(); e.hiAtten.clear(); e.autoGain = 1.0; }
+    for (auto& e : eq) { e.loBoost.clear(); e.loAtten.clear(); e.loNotch.clear(); e.mLo.clear(); e.mDip.clear(); e.mHi.clear(); e.hiPeak.clear(); e.hiAtten.clear(); e.autoGain = 1.0; }
     heat = 0.0f;
     // start from the current settings, no glide
     for (int c = 0; c < 2; ++c) { cur[c] = tgt[c]; designEq (eq[c], cur[c]); }
@@ -287,8 +289,8 @@ void EquanimityProcessor::processBlock (AudioBuffer<float>& buffer, MidiBuffer&)
                 if (ms) { const double mm = 0.5 * (a + b), ss = 0.5 * (a - b); a = mm; b = ss; }
                 if (eqIn)
                 {
-                    a = eq[0].hiAtten.tick (eq[0].hiPeak.tick (eq[0].mHi.tick (eq[0].mDip.tick (eq[0].mLo.tick (eq[0].loAtten.tick (eq[0].loBoost.tick (a))))))) * eq[0].autoGain;
-                    b = eq[1].hiAtten.tick (eq[1].hiPeak.tick (eq[1].mHi.tick (eq[1].mDip.tick (eq[1].mLo.tick (eq[1].loAtten.tick (eq[1].loBoost.tick (b))))))) * eq[1].autoGain;
+                    a = eq[0].hiAtten.tick (eq[0].hiPeak.tick (eq[0].mHi.tick (eq[0].mDip.tick (eq[0].mLo.tick (eq[0].loNotch.tick (eq[0].loAtten.tick (eq[0].loBoost.tick (a)))))))) * eq[0].autoGain;
+                    b = eq[1].hiAtten.tick (eq[1].hiPeak.tick (eq[1].mHi.tick (eq[1].mDip.tick (eq[1].mLo.tick (eq[1].loNotch.tick (eq[1].loAtten.tick (eq[1].loBoost.tick (b)))))))) * eq[1].autoGain;
                 }
                 if (solo) { const double v = soloSide ? b : a; a = b = v; }
                 else if (ms) { const double l = a + b, r = a - b; a = l; b = r; }
@@ -303,8 +305,8 @@ void EquanimityProcessor::processBlock (AudioBuffer<float>& buffer, MidiBuffer&)
                     const double sag = 1.0 + 0.15 * v.env;
                     // 12AX7: biased off centre, so the 2nd harmonic leads and the 3rd stays well below it at any level. The amounts are
                     // matched to the UAD model on a 60 Hz tone with the low boost full up: 2nd about -50 dB, 3rd about -64 dB near full scale
-                    s = triode (s, 0.0195 * sag, 0.45);
-                    s = triode (s, 0.08 * sag, -0.05);                                    // 12AU7: plenty of headroom, a little odd order when driven
+                    s = triode (s, 0.016 * sag, 0.45);
+                    s = triode (s, 0.06 * sag, -0.05);                                    // 12AU7: plenty of headroom, a little odd order when driven
                     v.lowband += aLow * (s - v.lowband);                                    // output transformer: the iron gives in first at the bottom
                     s += satLow (v.lowband) - v.lowband;
                     v.top += aTop * (s - v.top); s = v.top;                                 // ... and rolls off gently far above

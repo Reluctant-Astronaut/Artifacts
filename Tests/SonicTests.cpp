@@ -983,7 +983,7 @@ static void testEquanimity (double sr)
         double lowest = 99; for (double f : { 300.0, 500.0, 1000.0, 2000.0 }) lowest = std::min (lowest, eqGain (r, f));
         // the hardware: nearly all of the boost at the frequency chosen, starting about six times higher
         // (at 60 Hz the same as the UAD model gives a 60 Hz tone: both read 17.9 dBFS max in the user's comparison)
-        row ("low-boost-shape", "at_60Hz_dB", g60, g60 > 11.5 && g60 < 13.5 ? "PASS" : "FAIL");
+        row ("low-boost-shape", "at_60Hz_dB", g60, g60 > 12.8 && g60 < 14.8 ? "PASS" : "FAIL");
         row ("low-boost-shape", "at_120Hz_dB", g120, g120 > 7.0 && g120 < 10.5 ? "PASS" : "FAIL");
         row ("low-boost-shape", "at_250Hz_dB", g250, g250 > 1.5 && g250 < 4.5 ? "PASS" : "FAIL");
         row ("low-boost-shape", "no_dip_above_dB", lowest, lowest > -0.3 ? "PASS" : "FAIL");
@@ -1010,6 +1010,17 @@ static void testEquanimity (double sr)
         for (double f : { 150.0, 200.0, 250.0, 300.0, 400.0, 500.0 }) dip = std::min (dip, eqGain (t, f));
         row ("taper", "trick_2.5_bump_dB", bump, bump > 1.5 && bump < 5.0 ? "PASS" : "FAIL");
         row ("taper", "trick_2.5_dip_dB", dip, dip < -1.0 && dip > -4.0 ? "PASS" : "FAIL");
+        // with the boost up, the atten reshapes the curve instead of lowering the boost (as on the UAD model):
+        // 60 Hz barely moves, a dip appears above
+        for (float at : { 5.0f, 10.0f })
+        {
+            Rig b (sr); b.set ("lofreq", 2); b.set ("loboost", 10);
+            Rig ba (sr); ba.set ("lofreq", 2); ba.set ("loboost", 10); ba.set ("loatten", at);
+            const double d60 = eqGain (ba, 60) - eqGain (b, 60);
+            double dip = 99; for (double f : { 200.0, 250.0, 300.0, 400.0 }) dip = std::min (dip, eqGain (ba, f) - eqGain (b, f));
+            row ("trick-shape", "boost10_atten" + String ((int) at) + "_change_at_60Hz_dB", d60, std::abs (d60) < 1.5 ? "PASS" : "FAIL");
+            row ("trick-shape", "boost10_atten" + String ((int) at) + "_dip_above_dB", dip, dip < -3.0 ? "PASS" : "FAIL");
+        }
         // halfway on both: still clearly more at the bottom, and a deeper dip (atten is not just "less boost")
         Rig h5 (sr); h5.set ("lofreq", 2); h5.set ("loboost", 5); h5.set ("loatten", 5);
         double b5 = -99, d5 = 99;
