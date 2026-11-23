@@ -61,6 +61,7 @@ AudioProcessorValueTreeState::ParameterLayout EquanimityProcessor::createLayout(
     choice ("msmode", "Path", { "L/R", "M/S" }, 0);                       // the whole EQ in left / right or in mid / side
     choice ("msedit", "Path Edit", { "Mid", "Link", "Side" }, 0, false);   // in M/S: which channel the panel edits (Link = both)
     choice ("autogain", "Auto Gain", { "Out", "In" }, 0);                     // keeps the level steady as the EQ changes
+    choice ("noise", "Noise", { "Off", "On" }, 1);                             // the hardware's own faint hiss
     choice ("solo", "Solo", { "Out", "In" }, 0);                                  // listen to the Mid or the Side alone
     // Output
     p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "output", 1 }, "Output", NormalisableRange<float> (-24.0f, 12.0f, 0.1f), 0.0f,
@@ -91,6 +92,7 @@ EquanimityProcessor::EquanimityProcessor()
     pSolo = apvts.getRawParameterValue ("solo");
     static const char* base[14] { "lofreq", "loboost", "loatten", "hifreq", "bw", "hiboost", "attensel", "hiatten", "mlfreq", "mlpeak", "mdfreq", "mdip", "mhfreq", "mhpeak" };
     pAuto = apvts.getRawParameterValue ("autogain");
+    pNoise = apvts.getRawParameterValue ("noise");
     static const char* pre[3] { "", "m_", "s_" };
     for (int b = 0; b < 3; ++b)
         for (int k = 0; k < 14; ++k)
@@ -113,7 +115,7 @@ double EquanimityProcessor::attSelHz (int i)  { static const double f[] { 5000, 
 
 // The EQP-1A, as measured on the hardware:
 //  - Low boost: a broad shelf that has almost all of its 13.5 dB at the frequency chosen and starts about six times higher
-//    (60 Hz, boost 10: +12.4 dB at 60, +9 at 120, +3 at 250). Low atten: a shelf of up to -17.5 dB that turns over higher still,
+//    (60 Hz, boost 10: +11.1 dB at 60, +6.7 at 120, +2.2 at 250: a smooth slope up from the frequency chosen). Low atten: a shelf of up to -17.5 dB that turns over higher still,
 //    so the two together give more low end with a dip above it (the Pultec trick; at 60 Hz the dip is near 250 - 300 Hz).
 //  - The dials are audio-taper pots: much of each control's effect comes in the first quarter of its travel, the boost faster
 //    than the atten (which is why, with both at the same number, the boost wins at the bottom: about +3 dB and a -2 dB dip at 2.5).
@@ -147,11 +149,11 @@ void EquanimityProcessor::designEq (EqChannel& e, const Settings& s) const
     };
     const double fl = s.hz[0];
     const double tb = boostTaper (s.loBoost), ta = attenTaper (s.loAtten);
-    shelfLow (e.loBoost, fl * 2.6, 13.5 * tb, 0.6);                                  // broad, no dip of its own
+    shelfLow (e.loBoost, fl * 2.0, 13.5 * tb, 0.55);                                 // broad and smooth, no dip of its own
     // the atten turns over well above the boost, and in the shared network it gives way as the boost comes up: so boost and
     // atten together (same number) keep a lift at the bottom with a dip above it, the Pultec trick
     // (2.5 / 2.5: about +3 dB and -2 dB near 300 Hz, as measured on the hardware; 5 / 5: +3.5 and -4.3)
-    shelfLow (e.loAtten, fl * 7.5, -17.5 * ta * (1.0 - 0.45 * tb), 0.9);
+    shelfLow (e.loAtten, fl * 6.5, -17.5 * ta * (1.0 - 0.45 * tb), 0.9);
     // bandwidth: sharp (0) is a narrow peak of up to +18 dB, broad (10) a wide one of up to +9 dB
     const double q = 2.5 * std::pow (0.45 / 2.5, s.bw / 10.0);                       // 2.5 ... 0.45
     peak (e.hiPeak, s.hz[1], (18.0 - 9.0 * s.bw / 10.0) * boostTaper (s.hiBoost), q);
@@ -316,6 +318,23 @@ void EquanimityProcessor::processBlock (AudioBuffer<float>& buffer, MidiBuffer&)
     }
     heat += ((float) jlimit (0.0, 1.0, envMax * 2.0) - heat) * 0.3f;
     valveHeat = heat;
+
+    // ---- the hardware's own noise floor: a faint, even hiss from the tubes and transformers, about -96 dBFS, its own in each
+    //      channel. Below hearing on its own; across a mix it is part of what keeps it from sounding sterile.
+    if (pNoise->load() > 0.5f)
+    {
+        const float amp = Decibels::decibelsToGain (-96.0f) * 1.732f;   // uniform noise of this peak has the RMS above
+        for (int c = 0; c < 2; ++c)
+        {
+            auto* d = c == 0 ? L : R;
+            auto& st = noiseState[c];
+            for (int i = 0; i < n; ++i)
+            {
+                st ^= st << 13; st ^= st >> 17; st ^= st << 5;
+                d[i] += amp * ((float) (st & 0xffffff) / 8388608.0f - 1.0f);
+            }
+        }
+    }
 
     // ---- output level
     sOut.setTargetValue (Decibels::decibelsToGain (pOutput->load()));

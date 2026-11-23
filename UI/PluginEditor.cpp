@@ -3001,6 +3001,11 @@ ArtifactsEditor::ArtifactsEditor (ArtifactsProcessor& p)
         channelDrum.setVisible (false); xfmrDrum.setVisible (false); speedDrum.setVisible (false);
         tapeLamp.setTooltip ("Auto gain: keeps the level steady while you shape the tone");
         tapeSwitch.setTooltip ("Auto gain in / out");
+        noiseLamp.setTooltip ("Noise: the faint hiss of the tubes and transformers, as on the hardware (about -96 dBFS)");
+        noiseSwitch.setTooltip ("Noise in / out");
+        plateArea.addAndMakeVisible (noiseLamp);
+        plateArea.addAndMakeVisible (noiseSwitch);
+        noiseSwitch.onClick = [this] { toggleParam ("noiseon"); };
         valveLamp.setTooltip ("Solo: hear only the Mid or only the Side (in M/S mode, with M or S chosen)");
         valveSwitch.setTooltip ("Solo the Mid or the Side");
         peakLamp.setRed (true); peakLamp.setTooltip ("Output peak");
@@ -3132,7 +3137,7 @@ juce::String ArtifactsEditor::rid (const juce::String& slot) const
         for (auto& m : banked)
             if (slot == m.first) return juce::String (eqBank == 1 ? "m_" : eqBank == 2 ? "s_" : "") + m.second;
         static const std::pair<const char*, const char*> shared[] = {
-            { "consoleon", "eqin" }, { "valveon", "solo" }, { "tapeon", "autogain" }, { "output", "output" } };
+            { "consoleon", "eqin" }, { "valveon", "solo" }, { "tapeon", "autogain" }, { "noiseon", "noise" }, { "output", "output" } };
         for (auto& m : shared)
             if (slot == m.first) return m.second;
         return {};
@@ -3287,6 +3292,12 @@ void ArtifactsEditor::timerCallback()
     consoleSwitch.setOn (cOn);
     valveSwitch.setOn (vOn);
     tapeSwitch.setOn (tOn);
+    if (mockVariant == 5)
+    {
+        const bool nOn = paramValue ("noiseon", 1.0f) > 0.5f;
+        noiseSwitch.setOn (nOn);
+        noiseLamp.setGlow (nOn ? 1.0f : 0.0f);
+    }
     // The valve lamp breathes with how hard the tube is working, and flickers a touch
     const float heatTarget = vOn ? 0.55f + 0.45f * proc.getValveHeat() : 0.0f;
     valveGlow += (heatTarget - valveGlow) * 0.12f;
@@ -3439,6 +3450,9 @@ void ArtifactsEditor::layoutPanel()
             const int ay = row1Y + 244;   // AUTO GAIN: lamp and lever, under EQ IN
             tapeLamp.setBounds (sx - 24 - 6 - 4, ay - 24, 48, 48);
             tapeSwitch.setBounds (sx + 8, ay - 17, 22, 34);
+            const int ny = (sy + ay) / 2;   // NOISE: lamp and lever, between them
+            noiseLamp.setBounds (sx - 24 - 6 - 4, ny - 24, 48, 48);
+            noiseSwitch.setBounds (sx + 8, ny - 17, 22, 34);
         }
         {
             const int cx = out.x + 2 * outColW - 38;
@@ -4284,6 +4298,9 @@ void ArtifactsEditor::renderPlate()
             const auto ab = tapeSwitch.getBounds();
             pg.setFont (KintsugiFonts::serif (13.0f).withExtraKerningFactor (0.2f));
             pg.drawText ("AUTO GAIN", Rectangle<int> (tapeLamp.getBounds().getCentreX() - 50, ab.getBottom() + 4, 120, 18), Justification::centred);
+            const auto nb = noiseSwitch.getBounds();
+            pg.setFont (KintsugiFonts::serif (13.0f).withExtraKerningFactor (0.2f));
+            pg.drawText ("NOISE", Rectangle<int> (noiseLamp.getBounds().getCentreX() - 30, nb.getBottom() + 4, 100, 18), Justification::centred);
             const auto vb = valveSwitch.getBounds();
             pg.setFont (KintsugiFonts::serif (13.0f).withExtraKerningFactor (0.2f));
             pg.drawText ("SOLO", Rectangle<int> (valveLamp.getBounds().getCentreX() - 30, vb.getBottom() + 4, 100, 18), Justification::centred);

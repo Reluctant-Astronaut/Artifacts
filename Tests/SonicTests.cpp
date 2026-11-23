@@ -968,9 +968,10 @@ static void testEquanimity (double sr)
         const double g60 = eqGain (r, 60), g120 = eqGain (r, 120), g250 = eqGain (r, 250);
         double lowest = 99; for (double f : { 300.0, 500.0, 1000.0, 2000.0 }) lowest = std::min (lowest, eqGain (r, f));
         // the hardware: nearly all of the boost at the frequency chosen, starting about six times higher
-        row ("low-boost-shape", "at_60Hz_dB", g60, g60 > 11.0 && g60 < 13.5 ? "PASS" : "FAIL");
-        row ("low-boost-shape", "at_120Hz_dB", g120, g120 > 7.0 && g120 < 10.5 ? "PASS" : "FAIL");
-        row ("low-boost-shape", "at_250Hz_dB", g250, g250 > 1.5 && g250 < 4.5 ? "PASS" : "FAIL");
+        // (and matched to the UAD model's curve: a smooth slope up from the frequency chosen)
+        row ("low-boost-shape", "at_60Hz_dB", g60, g60 > 10.0 && g60 < 13.0 ? "PASS" : "FAIL");
+        row ("low-boost-shape", "at_120Hz_dB", g120, g120 > 5.0 && g120 < 8.0 ? "PASS" : "FAIL");
+        row ("low-boost-shape", "at_250Hz_dB", g250, g250 > 1.0 && g250 < 3.5 ? "PASS" : "FAIL");
         row ("low-boost-shape", "no_dip_above_dB", lowest, lowest > -0.3 ? "PASS" : "FAIL");
     }
     // ... and it is still there on loud material: boost 10 at 60 Hz, -12 dBFS in, still lifts 60 Hz by 8 dB or more
@@ -1067,9 +1068,15 @@ static void testEquanimity (double sr)
         double side = 0; for (int k = 1; k <= 3; ++k) { const double u = std::abs (demod (a, from, from + len, 7000.0 + 60.0 * k, sr)), d = std::abs (demod (a, from, from + len, 7000.0 - 60.0 * k, sr)); side += u * u + d * d; }
         const double imd = 100.0 * std::sqrt (side) / c7;
         row ("smooth", "smpte_imd_-12dBFS_pct", imd, imd < 0.8 ? "PASS" : "FAIL");   // mostly 2nd order, as a single-ended triode gives
-        Rig q (sr); q.reset(); Buf z ((size_t) n, 0.0f), za, zb; q.process (z, z, za, zb);
+        Rig q (sr); q.set ("noise", 0); q.reset(); Buf z ((size_t) n, 0.0f), za, zb; q.process (z, z, za, zb);
         double pk = 0; for (auto v : za) pk = std::max (pk, (double) std::abs (v));
-        row ("smooth", "silence_out_dBFS", db (pk + 1e-12), pk < 1.0e-6 ? "PASS" : "FAIL");
+        row ("smooth", "silence_out_noise_off_dBFS", db (pk + 1e-12), pk < 1.0e-6 ? "PASS" : "FAIL");
+        // with NOISE on (the default): the hardware's hiss, about -96 dBFS, its own in each channel
+        Rig h (sr); h.reset(); Buf ha, hb; h.process (z, z, ha, hb);
+        const double nl = db (rms (ha, (int) sr)); double cross = 0, e1 = 0, e2 = 0;
+        for (size_t i = (size_t) sr; i < ha.size(); ++i) { cross += ha[i] * hb[i]; e1 += ha[i] * ha[i]; e2 += hb[i] * hb[i]; }
+        row ("noise", "floor_dBFS", nl, nl > -99.0 && nl < -93.0 ? "PASS" : "FAIL");
+        row ("noise", "left_right_correlation", cross / std::sqrt (e1 * e2 + 1e-30), std::abs (cross / std::sqrt (e1 * e2 + 1e-30)) < 0.05 ? "PASS" : "FAIL");
     }
     // the top end keeps its analog shape: a 12 kHz peak is as wide above as below (no squeezing near the top of the band)
     {
@@ -1197,7 +1204,7 @@ static void testEquanimity (double sr)
         Buf s = pink ((int) sr, 0.3f), a, b; s[100] = 50.0f; s[200] = -1e6f;
         r.process (s, s, a, b);
         row ("robust", "extreme_input_finite", ! bad (a) && ! bad (b), (! bad (a) && ! bad (b)) ? "PASS" : "FAIL");
-        Rig r2 (sr); r2.set ("loboost", 10); r2.set ("hiboost", 10); { Buf q = pink ((int) sr / 2, 0.1f), qa, qb; r2.process (q, q, qa, qb); }
+        Rig r2 (sr); r2.set ("noise", 0); r2.set ("loboost", 10); r2.set ("hiboost", 10); { Buf q = pink ((int) sr / 2, 0.1f), qa, qb; r2.process (q, q, qa, qb); }
         Buf z ((size_t) sr, 0.0f); r2.process (z, z, a, b);
         row ("robust", "silence_tail_rms_dB", db (rms (a, (int) sr / 2)), db (rms (a, (int) sr / 2)) < -100 ? "PASS" : "WARN");
         // every selector and both modes, automated while playing

@@ -91,6 +91,8 @@ private:
     std::atomic<float> *pOutput = nullptr, *pEqIn = nullptr, *pMode = nullptr, *pEdit = nullptr, *pSolo = nullptr;
     std::atomic<float>* pBank[3][14] {};
     std::atomic<float>* pAuto = nullptr;
+    std::atomic<float>* pNoise = nullptr;
+    uint32_t noiseState[2] { 0x9e3779b9u, 0x7f4a7c15u };
     juce::SmoothedValue<float> sOut;
     EqChannel eq[2];
     Settings cur[2], tgt[2];

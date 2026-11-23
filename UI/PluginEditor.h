@@ -211,6 +211,8 @@ private:
     PilotLamp consoleLamp, valveLamp, tapeLamp, peakLamp;
     float peakHold = 0.0f;
     ToggleSwitch consoleSwitch, valveSwitch, tapeSwitch;
+    PilotLamp noiseLamp;      // Equanimity: the hardware's noise floor in / out
+    ToggleSwitch noiseSwitch;
     float valveGlow = 0.0f;
     juce::Random flicker;
 
