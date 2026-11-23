@@ -149,6 +149,11 @@ public:
     static constexpr int defaultCaseStyle = 5;   // the glazed ceramic case, mended with gold
     static inline int caseStyleOverride = -1;   // for previews
     static inline int mockVariant = ARTIFACTS_VARIANT;   // 1 Kintsugi, 2 Console RA-1, 3 Duality, 4 Anemoia, 5 Equanimity (set per plugin at build time)
+    bool sizeReady = false, laidOut = false;
+    void layoutPanel();   // places every part at the design size (resized() then scales the lot)
+    float uiScale = 1.0f;   // the window's size relative to the design size (the panel is drawn at the design size and scaled)
+    static int designW();
+    static int designH();
     ~ArtifactsEditor() override;
 
     void paint (juce::Graphics&) override;

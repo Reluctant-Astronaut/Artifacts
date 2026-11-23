@@ -1306,6 +1306,7 @@ void ArtifactsEditor::PlateArea::paint (juce::Graphics& g)
 
 void ArtifactsEditor::paintOverChildren (juce::Graphics& g)
 {
+    g.addTransform (juce::AffineTransform::scale (uiScale));
     // The wooden frame casts a soft shadow onto the plate's top and left edges
     using namespace juce;
     const auto p = plateArea.getBounds().toFloat();
@@ -1939,6 +1940,9 @@ void ArtifactsEditor::renderHousingCeramic()
     g.setColour (Colour (0xff070605));
     g.drawRect (pr.expanded (1.2f), 1.8f);
 }
+
+int ArtifactsEditor::designW() { return Layout::W + 2 * Layout::sideW; }
+int ArtifactsEditor::designH() { return Layout::H + 2 * Layout::railH; }
 
 void ArtifactsEditor::paint (juce::Graphics& g)
 {
@@ -3047,8 +3051,18 @@ ArtifactsEditor::ArtifactsEditor (ArtifactsProcessor& p)
         eqBank = eqBankOf (proc.apvts);
         rebindBank();
     }
-    if (mockVariant == 5) setSize (Layout::W + 2 * Layout::sideW, Layout::H + 2 * Layout::railH);
-    else setSize (Layout::W + 2 * Layout::sideW, Layout::H + 2 * Layout::railH);
+    // Resizable: drag the corner (or the host's window edge), 50 - 150 %, always in proportion; the size is kept with the
+    // session. Everything is laid out at the design size and scaled as a whole.
+    {
+        const int dw = designW(), dh = designH();
+        const float saved = (float) (double) proc.apvts.state.getProperty ("uiScale", 1.0);
+        const float s0 = juce::jlimit (0.5f, 1.5f, saved > 0.0f ? saved : 1.0f);
+        setResizable (true, true);
+        getConstrainer()->setFixedAspectRatio ((double) dw / (double) dh);
+        setResizeLimits (dw / 2, dh / 2, dw * 3 / 2, dh * 3 / 2);
+        sizeReady = true;
+        setSize (juce::roundToInt ((float) dw * s0), juce::roundToInt ((float) dh * s0));
+    }
     timerCallback();
     channelDrum.snap();
     xfmrDrum.snap();   // open on the current numbers, without rolling
@@ -3354,6 +3368,25 @@ void ArtifactsEditor::placeKnob (Knob& k, float col, int row, juce::Point<int> o
 
 void ArtifactsEditor::resized()
 {
+    uiScale = juce::jlimit (0.25f, 2.0f, (float) getWidth() / (float) designW());
+    if (std::abs (uiScale - 1.0f) < 0.002f) uiScale = 1.0f;
+    if (sizeReady) proc.apvts.state.setProperty ("uiScale", uiScale, nullptr);   // reopens at the size it was left at
+    if (! laidOut) { layoutPanel(); laidOut = true; }   // everything is placed once, at the design size
+    if (plate.isNull())   // the plate and the case are drawn once, at twice the design size; resizing only scales them
+    {
+        renderPlate();
+        plateArea.image = &plate;
+        renderHousing();
+    }
+    // scale the whole panel to the window (the resize corner itself stays as it is)
+    const auto t = juce::AffineTransform::scale (uiScale);
+    for (auto* ch : getChildren())
+        if (ch != resizableCorner.get())
+            ch->setTransform (t);
+}
+
+void ArtifactsEditor::layoutPanel()
+{
     using namespace Layout;
     plateArea.setBounds (sideW, railH, W, H);
     sections.clear();
@@ -3422,9 +3455,6 @@ void ArtifactsEditor::resized()
             const float right = (float) s.bounds.getCentreX() + block * 0.5f;
             s.lamp->setBounds (juce::roundToInt (right - 39.0f) - 24, s.bounds.getY() - 24, 48, 48);
         }
-        renderPlate();
-        plateArea.image = &plate;
-        renderHousing();
         return;
     }
     if (mockVariant == 4)
@@ -3469,9 +3499,6 @@ void ArtifactsEditor::resized()
             if (s.toggle != nullptr)
                 s.toggle->setBounds (juce::roundToInt (right - 12.0f) - 11, s.bounds.getY() - 17, 22, 34);
         }
-        renderPlate();
-        plateArea.image = &plate;
-        renderHousing();
         return;
     }
     if (mockVariant == 2)
@@ -3512,9 +3539,6 @@ void ArtifactsEditor::resized()
             if (s.toggle != nullptr)
                 s.toggle->setBounds (juce::roundToInt (right - 12.0f) - 11, s.bounds.getY() - 17, 22, 34);
         }
-        renderPlate();
-        plateArea.image = &plate;
-        renderHousing();
         return;
     }
     if (mockVariant == 3)
@@ -3557,9 +3581,6 @@ void ArtifactsEditor::resized()
             const float right = (float) s.bounds.getCentreX() + block * 0.5f;
             s.lamp->setBounds (juce::roundToInt (right - 39.0f) - 24, s.bounds.getY() - 24, 48, 48);
         }
-        renderPlate();
-        plateArea.image = &plate;
-        renderHousing();
         return;
     }
     const bool mock1 = mockVariant == 1;
@@ -3658,9 +3679,6 @@ void ArtifactsEditor::resized()
         vuR.setBounds (cx + gap / 2, vuY, vuW, vuH);
     }
 
-    renderPlate();
-    plateArea.image = &plate;
-    renderHousing();
 }
 
 //==============================================================================
@@ -4194,6 +4212,14 @@ void ArtifactsEditor::renderPlate()
         }
 
         // the maker's name, lower centre, below the knobs
+       #ifdef ARTIFACTS_BUILD_ID
+        {   // the build, very small in the lower left corner of the plate
+            Graphics::ScopedSaveState ss (pg);
+            pg.setColour (Palette::cream.withAlpha (0.45f));
+            pg.setFont (KintsugiFonts::serif (7.0f).withExtraKerningFactor (0.12f));
+            pg.drawText (String ("BUILD ") + String (ARTIFACTS_BUILD_ID).toUpperCase(), 76, H - 22, 120, 10, Justification::centredLeft);
+        }
+       #endif
         pg.setFont (KintsugiFonts::serif (8.5f).withExtraKerningFactor (0.42f));
         const int nameCx = mockVariant == 2 ? 262 : W / 2;
         pg.drawText ("RELUCTANT", nameCx - 110, H - 56, 220, 12, Justification::centred);

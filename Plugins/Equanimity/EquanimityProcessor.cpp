@@ -120,7 +120,8 @@ double EquanimityProcessor::attSelHz (int i)  { static const double f[] { 5000, 
 //  - High boost: a peak of up to +18 dB when sharp, +9 dB when broad. High atten: a broad shelf of up to -16 dB that has most of it
 //    at the frequency chosen and starts about an eighth of the way down (5 kHz: from about 600 Hz).
 static double boostTaper (double v) { return std::pow (jlimit (0.0, 10.0, v) / 10.0, 0.5); }
-static double attenTaper (double v) { return std::pow (jlimit (0.0, 10.0, v) / 10.0, 0.8); }
+static double attenTaperHigh (double v) { return std::pow (jlimit (0.0, 10.0, v) / 10.0, 0.8); }
+static double attenTaper (double v) { return jlimit (0.0, 10.0, v) / 10.0; }
 
 void EquanimityProcessor::designEq (EqChannel& e, const Settings& s) const
 {
@@ -147,18 +148,21 @@ void EquanimityProcessor::designEq (EqChannel& e, const Settings& s) const
     const double fl = s.hz[0];
     const double tb = boostTaper (s.loBoost), ta = attenTaper (s.loAtten);
     shelfLow (e.loBoost, fl * 2.6, 13.5 * tb, 0.6);                                  // broad, no dip of its own
-    shelfLow (e.loAtten, fl * 6.25, -17.5 * ta * (1.0 - 0.25 * tb), 0.55);           // turns over higher; the network gives a little as the boost comes up
+    // the atten turns over well above the boost, and in the shared network it gives way as the boost comes up: so boost and
+    // atten together (same number) keep a lift at the bottom with a dip above it, the Pultec trick
+    // (2.5 / 2.5: about +3 dB and -2 dB near 300 Hz, as measured on the hardware; 5 / 5: +3.5 and -4.3)
+    shelfLow (e.loAtten, fl * 7.5, -17.5 * ta * (1.0 - 0.45 * tb), 0.9);
     // bandwidth: sharp (0) is a narrow peak of up to +18 dB, broad (10) a wide one of up to +9 dB
     const double q = 2.5 * std::pow (0.45 / 2.5, s.bw / 10.0);                       // 2.5 ... 0.45
     peak (e.hiPeak, s.hz[1], (18.0 - 9.0 * s.bw / 10.0) * boostTaper (s.hiBoost), q);
     // MEQ-5 midrange (its published ranges): low peak up to +10 dB, dip up to -10 dB (200 Hz - 7 kHz), high peak up to +8 dB.
     // Audio-taper dials like the EQP-1A's, and the passive network's way with bandwidth: a gentle setting is a wide, soft lift;
     // turned up, the curve also tightens round its frequency
-    const double tl = boostTaper (s.mLoPk), td = attenTaper (s.mDip), th = boostTaper (s.mHiPk);
+    const double tl = boostTaper (s.mLoPk), td = attenTaperHigh (s.mDip), th = boostTaper (s.mHiPk);
     peak (e.mLo,  s.hz[3],  10.0 * tl, 0.45 + 0.45 * tl);    // Q 0.45 ... 0.9
     peak (e.mDip, s.hz[4], -10.0 * td, 0.60 + 0.60 * td);    // Q 0.6 ... 1.2
     peak (e.mHi,  s.hz[5],   8.0 * th, 0.45 + 0.45 * th);
-    shelfHigh (e.hiAtten, s.hz[2] * 0.35, -16.5 * attenTaper (s.hiAtten), 0.55);   // most of the cut at the frequency chosen
+    shelfHigh (e.hiAtten, s.hz[2] * 0.35, -16.5 * attenTaperHigh (s.hiAtten), 0.55);   // most of the cut at the frequency chosen
 }
 
 // How much the EQ changes the overall level, as heard: the power gain over 20 Hz - 20 kHz, equal weight per octave (as pink noise

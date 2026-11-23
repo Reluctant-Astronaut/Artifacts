@@ -800,6 +800,10 @@ static void renderEditor (const File& png, bool playAudio, const String& skin = 
     }
     std::unique_ptr<AudioProcessorEditor> ed (p->createEditor());
     ed->setVisible (true);
+    for (auto& kv : extra)   // size=0.7: the window resized to 70 %, as a user would drag it
+        if (kv.startsWith ("size="))
+            ed->setSize (roundToInt (ed->getWidth() * kv.fromFirstOccurrenceOf ("=", false, false).getFloatValue()),
+                         roundToInt (ed->getHeight() * kv.fromFirstOccurrenceOf ("=", false, false).getFloatValue()));
     for (int i = 0; i < 40; ++i) MessageManager::getInstance()->runDispatchLoopUntil (30);
     auto img = ed->createComponentSnapshot (ed->getLocalBounds(), true, 2.0f);
     PNGImageFormat fmt;
@@ -840,6 +844,32 @@ static double thdPct (Rig& r, double f, float amp, int chan = 0)
     for (int k = 2; k <= 10 && k * f < sr * 0.45; ++k) { const double h = std::abs (demod (o, from, from + len, k * f, sr)); acc += h * h; }
     return 100.0 * std::sqrt (acc) / h1;
 }
+// End to end, as in a host: turn each dial on the real editor and measure what the audio does
+static void uiProbe (double sr)
+{
+    Rig r (sr);
+    std::unique_ptr<AudioProcessorEditor> ed (r.p->createEditor());
+    ed->setVisible (true);
+    std::vector<Slider*> sliders;
+    std::function<void (Component*)> walk = [&] (Component* comp) { if (auto* s = dynamic_cast<Slider*> (comp)) if (s->isVisible()) sliders.push_back (s); for (auto* ch : comp->getChildren()) walk (ch); };
+    walk (ed.get());
+    auto snap = [&] { std::map<String, float> m; for (auto* prm : r.p->getParameters()) if (auto* rp = dynamic_cast<RangedAudioParameter*> (prm)) m[rp->paramID] = rp->getValue(); return m; };
+    const double f[] { 40, 60, 120, 250, 1000, 3000, 8000, 12000 };
+    double base[8]; for (int i = 0; i < 8; ++i) base[i] = eqGain (r, f[i], 0.1f);
+    for (auto* s : sliders)
+    {
+        const auto before = snap();
+        const double v0 = s->getValue();
+        s->setValue (s->getMinimum() + 0.5 * (s->getMaximum() - s->getMinimum()), sendNotificationSync);
+        String changed; for (auto& [id, v] : snap()) if (std::abs (v - before.at (id)) > 1e-6) changed << id << "=" << String (dynamic_cast<RangedAudioParameter*> (r.p->getParameters()[0]) ? 0 : 0) << " ";
+        changed = {}; for (auto& [id, v] : snap()) if (std::abs (v - before.at (id)) > 1e-6) changed << id << " ";
+        std::printf ("  slider @(%d,%d) half -> [%s]:", s->getX(), s->getY(), changed.trim().toRawUTF8());
+        for (int i = 0; i < 8; ++i) std::printf (" %g:%+.1f", f[i], eqGain (r, f[i], 0.1f) - base[i]);
+        std::printf ("\n");
+        s->setValue (v0, sendNotificationSync);
+    }
+}
+
 static void probeEquanimity (double sr)
 {
     // how much the low boost / atten really change the sound at real levels, and with the other switches
@@ -965,6 +995,13 @@ static void testEquanimity (double sr)
         for (double f : { 150.0, 200.0, 250.0, 300.0, 400.0, 500.0 }) dip = std::min (dip, eqGain (t, f));
         row ("taper", "trick_2.5_bump_dB", bump, bump > 1.5 && bump < 5.0 ? "PASS" : "FAIL");
         row ("taper", "trick_2.5_dip_dB", dip, dip < -1.0 && dip > -4.0 ? "PASS" : "FAIL");
+        // halfway on both: still clearly more at the bottom, and a deeper dip (atten is not just "less boost")
+        Rig h5 (sr); h5.set ("lofreq", 2); h5.set ("loboost", 5); h5.set ("loatten", 5);
+        double b5 = -99, d5 = 99;
+        for (double f : { 20.0, 30.0, 40.0 }) b5 = std::max (b5, eqGain (h5, f));
+        for (double f : { 150.0, 200.0, 250.0, 300.0, 400.0, 500.0 }) d5 = std::min (d5, eqGain (h5, f));
+        row ("taper", "trick_5_bump_dB", b5, b5 > 2.0 ? "PASS" : "FAIL");
+        row ("taper", "trick_5_dip_dB", d5, d5 < -3.0 ? "PASS" : "FAIL");
     }
     // the trick: boost 6 and atten 3 together at 60 Hz
     {
@@ -1207,6 +1244,7 @@ int main (int argc, char** argv)
         renderEditor (File (argv[1]).getChildFile (gName.removeCharacters (" ") + (skin.isNotEmpty() ? "-" + skin : String()) + "-editor.png"), true, skin, extra); return 0; }
     if (argc > 2 && String (argv[2]) == "debug") { debugBlocks (sr); return 0; }
     if (argc > 2 && String (argv[2]) == "probe") { probeEquanimity (sr); return 0; }
+    if (argc > 2 && String (argv[2]) == "uiprobe") { uiProbe (sr); return 0; }
     if (gName.contains ("Equanimity")) { testEquanimity (sr); return 0; }
     testLatency (sr);
     testNull (sr);

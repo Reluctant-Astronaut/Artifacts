@@ -5,6 +5,14 @@ project(Artifacts VERSION 1.0.0)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# The build's identity, printed small on each plugin's plate, so it is plain which build a session has loaded
+execute_process(COMMAND git rev-parse --short=7 HEAD WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+                OUTPUT_VARIABLE ARTIFACTS_BUILD_ID OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+if(NOT ARTIFACTS_BUILD_ID)
+    set(ARTIFACTS_BUILD_ID "local")
+endif()
+add_compile_definitions(ARTIFACTS_BUILD_ID="${ARTIFACTS_BUILD_ID}")
+
 # Universal binary on macOS (Apple Silicon + Intel)
 if(APPLE)
     set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS version")
