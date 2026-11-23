@@ -180,6 +180,26 @@ static double kWeight2 (double f)
     const auto h = (1.0 - 2.0 * z1 + z2) / (1.0 - 1.99004745483398 * z1 + 0.99007225036621 * z2);
     return std::norm (s * h);
 }
+// The BS.1770 loudness weighting at this session's rate: a +4 dB shelf above about 1.7 kHz and a high-pass at 38 Hz
+void EquanimityProcessor::designKWeight()
+{
+    const double pi = MathConstants<double>::pi;
+    {   // the shelf
+        const double f0 = 1681.974450955533, G = 3.999843853973347, Q = 0.7071752369554196;
+        const double K = std::tan (pi * f0 / sr), Vh = std::pow (10.0, G / 20.0), Vb = std::pow (Vh, 0.4996667741545416);
+        const double a0 = 1.0 + K / Q + K * K;
+        for (auto* arr : { kIn, kOut }) for (int c = 0; c < 2; ++c)
+            arr[c][0].set (Vh + Vb * K / Q + K * K, 2.0 * (K * K - Vh), Vh - Vb * K / Q + K * K, a0, 2.0 * (K * K - 1.0), 1.0 - K / Q + K * K);
+    }
+    {   // the high-pass
+        const double f0 = 38.13547087602444, Q = 0.5003270373238773, K = std::tan (pi * f0 / sr);
+        for (auto* arr : { kIn, kOut }) for (int c = 0; c < 2; ++c)
+            arr[c][1].set (1.0, -2.0, 1.0, 1.0 + K / Q + K * K, 2.0 * (K * K - 1.0), 1.0 - K / Q + K * K);
+    }
+    for (auto* arr : { kIn, kOut }) for (int c = 0; c < 2; ++c) { arr[c][0].clear(); arr[c][1].clear(); }
+    loudIn = loudOut = 0; residual = 1.0;
+}
+
 double EquanimityProcessor::loudnessComp (const EqChannel& e) const
 {
     constexpr int N = 40;
@@ -205,6 +225,7 @@ void EquanimityProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     sOut.reset (sampleRate, 0.03);
     sOut.setCurrentAndTargetValue (Decibels::decibelsToGain (pOutput->load()));
     for (auto& v : valve) v = {};
+    designKWeight();
     for (auto& e : eq) { e.loBoost.clear(); e.loAtten.clear(); e.loNotch.clear(); e.mLo.clear(); e.mDip.clear(); e.mHi.clear(); e.hiPeak.clear(); e.hiAtten.clear(); e.autoGain = 1.0; }
     heat = 0.0f;
     // start from the current settings, no glide
@@ -245,6 +266,15 @@ void EquanimityProcessor::processBlock (AudioBuffer<float>& buffer, MidiBuffer&)
     auto* L = buffer.getWritePointer (0);
     auto* R = buffer.getWritePointer (1);
     for (int i = 0; i < n; ++i) { ins[0] += L[i] * L[i]; ins[1] += R[i] * R[i]; }
+    // the loudness going in (for auto gain)
+    double kInPow = 0;
+    for (int i = 0; i < n; ++i)
+    {
+        const double l = kIn[0][1].tick (kIn[0][0].tick (L[i])), r = kIn[1][1].tick (kIn[1][0].tick (R[i]));
+        kInPow += l * l + r * r;
+    }
+    kInPow /= (double) jmax (1, n);
+    double gainUsed = 0; int gainCount = 0;
 
     // ---- the whole unit runs at 4x: the passive network (M/S, the EQ), then the valve make-up stage and the transformers.
     //      12AX7 gain stage into the 12AU7 output stage, a 6X4 supply that gives a little under load.
@@ -279,8 +309,11 @@ void EquanimityProcessor::processBlock (AudioBuffer<float>& buffer, MidiBuffer&)
                 for (int k = 0; k < 6; ++k)   // the frequencies glide, on a log scale
                     cs.hz[k] = std::exp (std::log (cs.hz[k]) + (std::log (t.hz[k]) - std::log (cs.hz[k])) * hzGlide);
                 designEq (eq[c], cs);
-                const double target = autoOn ? loudnessComp (eq[c]) : 1.0;
+                if (c == 0) staticComp = autoOn ? std::sqrt (loudnessComp (eq[0]) * loudnessComp (eq[1])) : 1.0;
+                // the curve's estimate at once, corrected by what the music has actually gained (one gain for both channels)
+                const double target = autoOn ? jlimit (0.25, 4.0, staticComp * residual) : 1.0;
                 eq[c].autoGain += (target - eq[c].autoGain) * 0.25;   // the level follows the dials, not the other way round
+                if (c == 0) { gainUsed += eq[0].autoGain; ++gainCount; }
             }
             const int end = jmin (m, start + step);
             for (int i = start; i < end; ++i)
@@ -318,6 +351,26 @@ void EquanimityProcessor::processBlock (AudioBuffer<float>& buffer, MidiBuffer&)
             }
         }
         oversampling.processSamplesDown (blk);
+    }
+    // the loudness coming out, without the auto gain: how much the EQ has really changed this material
+    {
+        const double g = gainCount > 0 ? gainUsed / gainCount : 1.0;
+        double kOutPow = 0;
+        for (int i = 0; i < n; ++i)
+        {
+            const double l = kOut[0][1].tick (kOut[0][0].tick (L[i])), r = kOut[1][1].tick (kOut[1][0].tick (R[i]));
+            kOutPow += l * l + r * r;
+        }
+        kOutPow /= (double) jmax (1, n) * g * g;
+        if (autoOn && kInPow > 1.0e-8)   // not on silence: the gain holds through gaps
+        {
+            const double a = 1.0 - std::exp (-(double) n / (1.5 * sr));   // over about the last 1.5 s
+            loudIn += (kInPow - loudIn) * a;
+            loudOut += (kOutPow * staticComp * staticComp - loudOut) * a;
+            if (loudIn > 0 && loudOut > 0)
+                residual = jlimit (0.5, 2.0, std::sqrt (loudIn / loudOut));
+        }
+        if (! autoOn) { loudIn = loudOut = 0; residual = 1.0; }
     }
     heat += ((float) jlimit (0.0, 1.0, envMax * 2.0) - heat) * 0.3f;
     valveHeat = heat;

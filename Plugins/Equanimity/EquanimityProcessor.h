@@ -82,6 +82,12 @@ private:
     static double mDipHz (int i);
     static double mHiHz (int i);
     double loudnessComp (const EqChannel&) const;
+    // Auto gain, measured on the music itself: the loudness (ITU BS.1770 weighting) going in and coming out of the EQ,
+    // over the last second or two. The curve's own estimate reacts at once; the measurement then corrects it to what the
+    // material actually gained or lost, so a bass boost on a mix with little deep bass is not turned down as if it had a lot.
+    Biquad kIn[2][2], kOut[2][2];
+    double loudIn = 0, loudOut = 0, residual = 1.0, staticComp = 1.0;
+    void designKWeight();
 
     // The valve stage (per channel, at 4x)
     struct Valve { double dc = 0, dc2 = 0, lowband = 0, env = 0, top = 0; };

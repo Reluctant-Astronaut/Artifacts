@@ -848,6 +848,8 @@ static double thdPct (Rig& r, double f, float amp, int chan = 0)
 static void uiProbe (double sr)
 {
     Rig r (sr);
+    const bool msProbe = SystemStats::getEnvironmentVariable ("PROBE_MS", "") == "1";
+    if (msProbe) { r.set ("msmode", 1); r.set ("msedit", (float) SystemStats::getEnvironmentVariable ("PROBE_EDIT", "2").getIntValue()); }   // M/S, the panel editing Mid / Link / Side
     std::unique_ptr<AudioProcessorEditor> ed (r.p->createEditor());
     ed->setVisible (true);
     std::vector<Slider*> sliders;
@@ -855,7 +857,7 @@ static void uiProbe (double sr)
     walk (ed.get());
     auto snap = [&] { std::map<String, float> m; for (auto* prm : r.p->getParameters()) if (auto* rp = dynamic_cast<RangedAudioParameter*> (prm)) m[rp->paramID] = rp->getValue(); return m; };
     const double f[] { 40, 60, 120, 250, 1000, 3000, 8000, 12000 };
-    double base[8]; for (int i = 0; i < 8; ++i) base[i] = eqGain (r, f[i], 0.1f);
+    double base[8], baseS[8]; for (int i = 0; i < 8; ++i) { base[i] = eqGain (r, f[i], 0.1f); baseS[i] = eqGain (r, f[i], 0.1f, true); }
     for (auto* s : sliders)
     {
         const auto before = snap();
@@ -864,12 +866,31 @@ static void uiProbe (double sr)
         String changed; for (auto& [id, v] : snap()) if (std::abs (v - before.at (id)) > 1e-6) changed << id << "=" << String (dynamic_cast<RangedAudioParameter*> (r.p->getParameters()[0]) ? 0 : 0) << " ";
         changed = {}; for (auto& [id, v] : snap()) if (std::abs (v - before.at (id)) > 1e-6) changed << id << " ";
         std::printf ("  slider @(%d,%d) half -> [%s]:", s->getX(), s->getY(), changed.trim().toRawUTF8());
+        if (msProbe) { for (int i = 0; i < 8; ++i) std::printf (" %g: mid %+.1f side %+.1f", f[i], eqGain (r, f[i], 0.1f, false) - base[i], eqGain (r, f[i], 0.1f, true) - eqGain (r, f[i], 0.1f, true) * 0 - baseS[i]); }
+        else
         for (int i = 0; i < 8; ++i) std::printf (" %g:%+.1f", f[i], eqGain (r, f[i], 0.1f) - base[i]);
         std::printf ("\n");
         s->setValue (v0, sendNotificationSync);
     }
 }
 
+static void hiProbe()
+{
+    // the high section at the session rates Cubase may run, L/R and M/S (side), on a stereo signal
+    for (double sr : { 44100.0, 48000.0, 88200.0, 96000.0 })
+        for (int ms = 0; ms < 2; ++ms)
+            for (int fi : { 3, 4, 5 })   // 6, 8, 10 kHz
+            {
+                const double fh[] { 3000, 4000, 5000, 6000, 8000, 10000, 12000, 16000 };
+                Rig r (sr); r.set ("noise", 0);
+                const String pre = ms ? "s_" : "";
+                if (ms) { r.set ("msmode", 1); r.set ("msedit", 2); }
+                r.set (pre + "hifreq", (float) fi); r.set (pre + "hiboost", 10); r.set (pre + "bw", 5);
+                Rig f (sr); f.set ("noise", 0); if (ms) f.set ("msmode", 1);
+                const double g = eqGain (r, fh[fi], 0.05f, ms == 1) - eqGain (f, fh[fi], 0.05f, ms == 1);
+                std::printf ("   sr %6.0f  %s  %5.0f Hz boost10: %+.1f dB\n", sr, ms ? "M/S side" : "L/R     ", fh[fi], g);
+            }
+}
 static void probeEquanimity (double sr)
 {
     // how much the low boost / atten really change the sound at real levels, and with the other switches
@@ -1213,6 +1234,24 @@ static void testEquanimity (double sr)
             { "mid_dip", [] (Rig& r) { r.set ("mdip", 10); r.set ("mdfreq", 4); } },
             { "high_cut", [] (Rig& r) { r.set ("hiatten", 10); r.set ("attensel", 0); } },
             { "mixed", [] (Rig& r) { r.set ("loboost", 8); r.set ("loatten", 4); r.set ("hiboost", 7); r.set ("mlpeak", 6); r.set ("mhpeak", 5); } } };
+        // ... and on material that is not pink: a mix with little deep bass (rolled off below 100 Hz). Here a bass boost
+        // adds less loudness than on pink noise, and auto gain must follow what the material really gained
+        {
+            Buf m = pink ((int) sr * 8, 0.1f);
+            { double z1 = 0, z2 = 0; const double a = std::exp (-MathConstants<double>::twoPi * 100.0 / sr);
+              for (auto& v : m) { z1 = a * z1 + (1 - a) * v; z2 = a * z2 + (1 - a) * z1; v = (float) (v - z2); } }   // two-pole high-pass at 100 Hz
+            double lv[2];
+            for (int on = 0; on < 2; ++on)
+            {
+                Rig r (sr); r.set ("loboost", 10); r.set ("lofreq", 2); r.set ("noise", 0); r.set ("autogain", (float) on);
+                Buf a, b; r.process (m, m, a, b);
+                const int from = (int) sr * 5;
+                Buf at (a.begin() + from, a.end()), mt (m.begin() + from, m.end());
+                lv[on] = db (rms (kWeight (at), 0)) - db (rms (kWeight (mt), 0));
+            }
+            row ("autogain", "bass_light_mix_boost_off_dB", lv[0]);
+            row ("autogain", "bass_light_mix_boost_on_dB", lv[1], std::abs (lv[1]) < 0.5 ? "PASS" : "FAIL");
+        }
         for (auto& cs : cases)
         {
             double lev[2];
@@ -1290,6 +1329,7 @@ int main (int argc, char** argv)
     if (argc > 2 && String (argv[2]) == "debug") { debugBlocks (sr); return 0; }
     if (argc > 2 && String (argv[2]) == "probe") { probeEquanimity (sr); return 0; }
     if (argc > 2 && String (argv[2]) == "uiprobe") { uiProbe (sr); return 0; }
+    if (argc > 2 && String (argv[2]) == "hiprobe") { hiProbe(); return 0; }
     if (gName.contains ("Equanimity")) { testEquanimity (sr); return 0; }
     testLatency (sr);
     testNull (sr);
