@@ -77,7 +77,7 @@ static inline double triode (double x, double k, double b)
     const double t0 = std::tanh (b), slope = 1.0 - t0 * t0;
     return (std::tanh (k * x + b) - t0) / (k * slope);
 }
-static inline double satLow (double l) { return std::tanh (0.3 * l) / 0.3; }   // gentle: boosted bass thickens, isn't crushed
+static inline double satLow (double l) { return std::tanh (0.12 * l) / 0.12; }   // gentle: boosted bass thickens, isn't crushed
 
 EquanimityProcessor::EquanimityProcessor()
     : ArtifactsProcessor (BusesProperties()
@@ -301,9 +301,10 @@ void EquanimityProcessor::processBlock (AudioBuffer<float>& buffer, MidiBuffer&)
                     const double ab = std::abs (s);
                     v.env += (ab - v.env) * (ab > v.env ? aAtt : aRel);                    // 6X4: the supply gives a little under load
                     const double sag = 1.0 + 0.15 * v.env;
-                    // 12AX7: biased off centre, so the 2nd harmonic leads and the 3rd stays well below it at any level
-                    s = triode (s, 0.055 * sag, 0.45);
-                    s = triode (s, 0.12 * sag, -0.05);                                    // 12AU7: plenty of headroom, a little odd order when driven
+                    // 12AX7: biased off centre, so the 2nd harmonic leads and the 3rd stays well below it at any level. The amounts are
+                    // matched to the UAD model on a 60 Hz tone with the low boost full up: 2nd about -50 dB, 3rd about -64 dB near full scale
+                    s = triode (s, 0.023 * sag, 0.45);
+                    s = triode (s, 0.08 * sag, -0.05);                                    // 12AU7: plenty of headroom, a little odd order when driven
                     v.lowband += aLow * (s - v.lowband);                                    // output transformer: the iron gives in first at the bottom
                     s += satLow (v.lowband) - v.lowband;
                     v.top += aTop * (s - v.top); s = v.top;                                 // ... and rolls off gently far above

@@ -912,6 +912,20 @@ static void probeEquanimity (double sr)
             std::printf ("\n");
         }
     }
+    // the user's test: a clean 60 Hz tone, Low Boost 10 at 60 Hz, the output near full scale
+    for (double inDb : { -24.0, -18.0, -14.0, -11.0, -8.0 })
+    {
+        Rig r (sr); r.set ("lofreq", 2); r.set ("loboost", 10); r.set ("noise", 0); r.reset();
+        const double f = 60.0; const float amp = (float) std::pow (10.0, inDb / 20.0);
+        const int n = (int) sr * 3;
+        Buf s = sine (n, f, sr, amp), a, b;
+        r.process (s, s, a, b);
+        const int from = (int) sr, len = (int) (std::floor ((double) (n - from) * f / sr) * sr / f);
+        const double h1 = std::abs (demod (a, from, from + len, f, sr));
+        std::printf ("   60 Hz boost10, in %+5.0f dBFS -> out %+6.1f dBFS:  H2 %6.1f  H3 %6.1f  H4 %6.1f  H5 %6.1f dB\n", inDb, db (h1),
+                     db (std::abs (demod (a, from, from + len, 2 * f, sr)) / h1), db (std::abs (demod (a, from, from + len, 3 * f, sr)) / h1),
+                     db (std::abs (demod (a, from, from + len, 4 * f, sr)) / h1), db (std::abs (demod (a, from, from + len, 5 * f, sr)) / h1));
+    }
     for (int ag = 0; ag < 2; ++ag)
     {
         Rig r (sr); r.set ("autogain", ag); r.set ("lofreq", 2); r.set ("loboost", 10);
@@ -1046,9 +1060,9 @@ static void testEquanimity (double sr)
     for (double f : { 100.0, 1000.0, 5000.0 })
     {
         Rig r (sr); r.set ("eqin", 0);
-        // warmth, but smooth: about 0.1 % at a typical -18 dBFS (the original's spec is 0.15 % at +10 dBm, i.e. -12 dBFS)
+        // clean, as the hardware (and the UAD model of it, compared on a 60 Hz tone) is: well under 0.1 % at a typical -18 dBFS
         const double t18 = thdPct (r, f, 0.1259f);
-        row ("thd", String ((int) f) + "Hz_-18dBFS_pct", t18, t18 > 0.06 && t18 < 0.25 ? "PASS" : "FAIL");
+        row ("thd", String ((int) f) + "Hz_-18dBFS_pct", t18, t18 > 0.015 && t18 < 0.1 ? "PASS" : "FAIL");
         const double t12 = thdPct (r, f, 0.2512f);
         row ("thd", String ((int) f) + "Hz_-12dBFS_pct", t12, lim (t12, 1.0, 1.5));
         row ("thd", String ((int) f) + "Hz_-24dBFS_pct", thdPct (r, f, 0.0631f));
@@ -1084,6 +1098,19 @@ static void testEquanimity (double sr)
         const double below = eqGain (r, 12000.0 / 1.414), above = eqGain (r, 12000.0 * 1.414);
         row ("smooth", "12k_peak_half_octave_below_dB", below);
         row ("smooth", "12k_peak_half_octave_above_dB", above, std::abs (above - below) < 2.0 ? "PASS" : "FAIL");
+    }
+    // matched to the UAD model on the user's test: 60 Hz tone, Low Boost 10, the output near full scale (in at -11 dBFS):
+    // 2nd harmonic about 50 dB down, 3rd about 64 dB down
+    {
+        Rig r (sr); r.set ("lofreq", 2); r.set ("loboost", 10); r.set ("noise", 0); r.reset();
+        const double f = 60.0; const int n = (int) sr * 3;
+        Buf s = sine (n, f, sr, 0.2818f), a, b;
+        r.process (s, s, a, b);
+        const int from = (int) sr, len = (int) (std::floor ((double) (n - from) * f / sr) * sr / f);
+        const double h1 = std::abs (demod (a, from, from + len, f, sr));
+        const double h2 = db (std::abs (demod (a, from, from + len, 2 * f, sr)) / h1), h3 = db (std::abs (demod (a, from, from + len, 3 * f, sr)) / h1);
+        row ("vs-uad", "60Hz_boost10_H2_dB", h2, h2 < -46.0 && h2 > -55.0 ? "PASS" : "FAIL");
+        row ("vs-uad", "60Hz_boost10_H3_dB", h3, h3 < -58.0 && h3 > -72.0 ? "PASS" : "FAIL");
     }
     // tube warmth: the 2nd harmonic leads the 3rd at every level, from quiet to driven
     for (double dbfs : { -24.0, -18.0, -12.0, -6.0, -1.0 })
