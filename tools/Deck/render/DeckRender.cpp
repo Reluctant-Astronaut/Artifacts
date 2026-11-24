@@ -59,7 +59,8 @@ static KeyInfo info (const String& id)
         { "channel", { 41, "CHANNEL", "" } }, { "markers", { 43, "MARKERS", "" } }, { "pool", { 43, "POOL", "" } }, { "audioconn", { 42, "CONNECTIONS", "" } },
         { "trkup", { 61, "UP", "up" } }, { "trkdown", { 62, "DOWN", "down" } },
         { "solo", { 63, "SOLO", "" } }, { "playstop", { 23, "PLAY  \xc2\xb7  STOP", "playstop" } }, { "mute", { 64, "MUTE", "" } }, { "trkleft", { 61, "", "left" } }, { "trkright", { 62, "", "right" } },
-        { "newver", { 53, "NEW VERSION", "" } }, { "arm", { 58, "ARM", "" } }, { "monitor", { 59, "MONITOR", "" } } };
+        { "newver", { 53, "NEW VERSION", "" } }, { "arm", { 58, "ARM", "" } }, { "monitor", { 59, "MONITOR", "" } },
+        { "sleep", { 99, "SLEEP", "" } } };   // 99: never sent to Cubase; the Deck darkens its own screen
     return m.at (id);
 }
 
@@ -943,6 +944,10 @@ static Layout ipadUF (UFExtras& X)
     L.lamps.push_back ({ "link", -1, "link", { W - 84.0f, 42.0f } });
     L.linkScale = 1.6f; L.linkLabel = { W - 84.0f, 69.0f };
     L.grooveY = 96.0f;
+    {   // SLEEP: a small key in the header, left of LINK. It darkens the Deck (screen saver); tap anywhere to wake.
+        const auto ki = info ("sleep");
+        L.keys.push_back ({ "sleep", ki.cc, ki.label, "", { W - 84.0f - 56.0f - 104.0f, 23.0f, 104.0f, 40.0f }, false });
+    }
     auto bracket = [&] (const char* t, float x, float w, float y) { L.brackets.push_back ({ t, Rectangle<int> ((int) x - 8, (int) y, (int) w + 16, 10) }); };
     // ---- one grid for both halves: the display's top and bottom, the transport's rows
     const float gTop = 142.0f, gDispBot = 338.0f, gRow1 = 390.0f, gRow1H = 76.0f, gRow2 = 486.0f, gRow2H = 110.0f, gBar = 612.0f, gBarH = 84.0f;
