@@ -934,6 +934,7 @@ struct UFExtras
     Point<float> pan;
     std::vector<Point<float>> encoders;
 };
+static bool swapTrackKeys = true;   // track arrows in the transport, REW / FWD in the strip
 static Layout ipadUF (UFExtras& X)
 {
     Layout L; L.name = "ipad"; L.screenW = 1080; L.screenH = 810;
@@ -1004,6 +1005,17 @@ static Layout ipadUF (UFExtras& X)
         }
         const auto ki = info ("playstop");
         L.keys.push_back ({ "playstop", ki.cc, String::fromUTF8 (ki.label), ki.icon, { x, gBar, rx + rw - x, gBarH }, true });
+    }
+    if (swapTrackKeys)
+    {   // the track arrows take REW / FWD's big places in the transport, REW / FWD go to the strip: easier to hit, eyes up
+        auto find = [&] (const char* id) -> KeyDef& { for (auto& k : L.keys) if (k.id == id) return k; return L.keys.front(); };
+        for (auto [a, b] : { std::pair { "trkleft", "rew" }, std::pair { "trkright", "ffw" } })
+        {
+            auto& t = find (a); auto& w = find (b);
+            std::swap (t.r, w.r);
+            t.big = true; t.label = "TRACK";
+            w.big = false;
+        }
     }
     // all keys in the same red (MIXER too)
     X.jog = {};
@@ -1204,6 +1216,7 @@ static void paintUFStatic (Graphics& g, const Layout& L, const UFExtras& X, bool
             g.setFont (KintsugiFonts::serif (10.0f).withExtraKerningFactor (0.14f));
             g.drawText ("CONNECTIONS", Rectangle<float> (140.0f, 14.0f).withCentre ({ k.r.getCentreX(), k.r.getBottom() + 14.0f }), Justification::centred);
         }
+    if (! swapTrackKeys)
     {
         Rectangle<float> a, b;
         for (auto& k : L.keys) { if (k.id == "trkleft") a = k.r; if (k.id == "trkright") b = k.r; }
