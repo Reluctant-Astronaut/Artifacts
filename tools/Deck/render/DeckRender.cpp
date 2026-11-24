@@ -1271,6 +1271,112 @@ int main (int argc, char** argv)
     out.createDirectory();
     const float scale = 3.0f;   // iPhone 15: 3 pixels per point
 
+    if (mode == "brand")   // the Reluctant Astronaut brand pack, drawn by the suite's own code (nothing re-drawn)
+    {
+        using namespace juce;
+        // the maker's mark exactly as renderPlate() prints it: RELUCTANT (Old Standard Bold 8.5, extra kerning 0.42) centred in
+        // a 220-wide box at y 0, ASTRONAUT (Bold 17, kerning 0.12) centred in a 260-wide box at y 10 (plate units)
+        auto logoPath = [] ()
+        {
+            Path p;
+            auto line = [&p] (const String& s, float h, float kern, float boxX, float boxY, float boxW, float boxH)
+            {
+                GlyphArrangement ga;
+                // exactly as Graphics::drawText lays a line out
+                ga.addCurtailedLineOfText (KintsugiFonts::serif (h).withExtraKerningFactor (kern), s, 0.0f, 0.0f, boxW, true);
+                ga.justifyGlyphs (0, ga.getNumGlyphs(), boxX, boxY, boxW, boxH, Justification::centred);
+                Path q; ga.createPath (q); p.addPath (q);
+            };
+            line ("RELUCTANT", 8.5f, 0.42f, -110.0f, 0.0f, 220.0f, 12.0f);
+            line ("ASTRONAUT", 17.0f, 0.12f, -130.0f, 10.0f, 260.0f, 22.0f);
+            return p;
+        };
+        const Path logo = logoPath();
+        const auto lb = logo.getBounds();
+        auto renderLogo = [&] (Colour col, float targetW, const String& name)
+        {
+            const float s = targetW / lb.getWidth();
+            const int pad = jmax (4, roundToInt (targetW * 0.02f));
+            Image img (Image::ARGB, roundToInt (lb.getWidth() * s) + 2 * pad, roundToInt (lb.getHeight() * s) + 2 * pad, true);
+            Graphics g (img);
+            g.setColour (col);
+            g.fillPath (logo, AffineTransform::translation (-lb.getX(), -lb.getY()).scaled (s).translated ((float) pad, (float) pad));
+            savePNG (img, out.getChildFile (name));
+        };
+        renderLogo (Palette::cream, 2400.0f, "logo_cream.png");
+        renderLogo (Palette::ink, 2400.0f, "logo_dark.png");
+        renderLogo (Palette::cream, 300.0f, "logo_cream_small.png");   // drawn at this size, not scaled down: the spacing holds
+        // the outlines as SVG (absolute coordinates, plate units; one path per colour)
+        {
+            auto svgOf = [&] (Colour col)
+            {
+                String d;
+                Path::Iterator it (logo);
+                auto f = [&] (float v, float o) { return String (v - o, 3); };
+                while (it.next())
+                {
+                    switch (it.elementType)
+                    {
+                        case Path::Iterator::startNewSubPath: d << "M" << f (it.x1, lb.getX()) << " " << f (it.y1, lb.getY()) << " "; break;
+                        case Path::Iterator::lineTo:          d << "L" << f (it.x1, lb.getX()) << " " << f (it.y1, lb.getY()) << " "; break;
+                        case Path::Iterator::quadraticTo:     d << "Q" << f (it.x1, lb.getX()) << " " << f (it.y1, lb.getY()) << " " << f (it.x2, lb.getX()) << " " << f (it.y2, lb.getY()) << " "; break;
+                        case Path::Iterator::cubicTo:         d << "C" << f (it.x1, lb.getX()) << " " << f (it.y1, lb.getY()) << " " << f (it.x2, lb.getX()) << " " << f (it.y2, lb.getY()) << " " << f (it.x3, lb.getX()) << " " << f (it.y3, lb.getY()) << " "; break;
+                        case Path::Iterator::closePath:       d << "Z "; break;
+                    }
+                }
+                return String ("<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 ") + String (lb.getWidth(), 3) + " " + String (lb.getHeight(), 3)
+                     + "\" width=\"" + String (lb.getWidth() * 10.0f, 0) + "\" height=\"" + String (lb.getHeight() * 10.0f, 0) + "\">\n"
+                     + "<title>Reluctant Astronaut</title>\n<path fill=\"#" + col.toDisplayString (false).toLowerCase() + "\" d=\"" + d.trim() + "\"/>\n</svg>\n";
+            };
+            out.getChildFile ("logo_cream.svg").replaceWithText (svgOf (Palette::cream));
+            out.getChildFile ("logo_dark.svg").replaceWithText (svgOf (Palette::ink));
+        }
+        // the plate: Equanimity's size (1706 x 478 plate units), at twice that, as the plugins draw it
+        const int PW = 1706, PH = 478;
+        { Random rng (2027); savePNG (buildPlateBase (PW, PH, 2.0f, rng, false, true), out.getChildFile ("plate_green.png")); }
+        { Random rng (2027); savePNG (buildPlateBase (PW, PH, 2.0f, rng, false, false), out.getChildFile ("plate_green_no_screws.png")); }
+        { Random rng (2027); savePNG (buildPlateBase (PW, PH, 2.0f, rng, true, true), out.getChildFile ("plate_green_with_groove.png")); }
+        { Random rng (77); savePNG (buildPlateBase (1920, 1080, 2.0f, rng, false, false), out.getChildFile ("plate_green_16x9_3840x2160.png")); }
+        {   // the pressed groove on its own, as drawn on the plate (transparent around it)
+            Image gi (Image::ARGB, PW * 2, PH * 2, true);
+            Graphics g (gi); g.addTransform (AffineTransform::scale (2.0f));
+            g.setColour (Colours::black.withAlpha (0.45f)); g.fillRect (18.0f, (float) Layout::topH, (float) PW - 36.0f, 1.6f);
+            g.setColour (Colours::white.withAlpha (0.18f)); g.fillRect (18.0f, (float) Layout::topH + 1.6f, (float) PW - 36.0f, 1.0f);
+            savePNG (gi, out.getChildFile ("groove.png"));
+        }
+        {   // the plate with the logo printed as on the plugins: lower centre, cream, worn with the plugins' own wear
+            Random rng (2027);
+            Image plate = buildPlateBase (PW, PH, 2.0f, rng, true, true);
+            Image print (Image::ARGB, PW * 2, PH * 2, true);
+            {
+                Graphics pg (print); pg.addTransform (AffineTransform::scale (2.0f));
+                pg.setColour (Palette::cream);
+                pg.fillPath (logo, AffineTransform::translation ((float) PW / 2.0f, (float) PH - 56.0f));
+            }
+            wearPrint (print, 78, 1.0f);
+            { Graphics g (plate); g.drawImageAt (print, 0, 0); }
+            savePNG (plate, out.getChildFile ("plate_green_with_logo.png"));
+            // the worn logo alone, as printed (transparent), cut from that print layer
+            const auto r = (logo.getBounds().translated ((float) PW / 2.0f, (float) PH - 56.0f) * 2.0f).expanded (6.0f).getSmallestIntegerContainer();
+            savePNG (print.getClippedImage (r).createCopy(), out.getChildFile ("logo_cream_worn_as_printed.png"));
+        }
+        {   // check: the outlines land exactly where the plugins' drawText puts the words
+            Image A (Image::ARGB, 600, 120, true), B (Image::ARGB, 600, 120, true);
+            { Graphics g (A); g.addTransform (AffineTransform::scale (2.0f)); g.setColour (Colours::white);
+              g.setFont (KintsugiFonts::serif (8.5f).withExtraKerningFactor (0.42f)); g.drawText ("RELUCTANT", 150 - 110, 10, 220, 12, Justification::centred);
+              g.setFont (KintsugiFonts::serif (17.0f).withExtraKerningFactor (0.12f)); g.drawText ("ASTRONAUT", 150 - 130, 20, 260, 22, Justification::centred); }
+            { Graphics g (B); g.addTransform (AffineTransform::scale (2.0f)); g.setColour (Colours::white); g.fillPath (logo, AffineTransform::translation (150.0f, 10.0f)); }
+            int maxd = 0; for (int y = 0; y < 120; ++y) for (int x = 0; x < 600; ++x) maxd = jmax (maxd, std::abs ((int) A.getPixelAt (x, y).getAlpha() - (int) B.getPixelAt (x, y).getAlpha()));
+            std::cout << "outline vs drawText, largest alpha difference: " << maxd << " / 255" << std::endl;
+            double sa = 0, xa = 0, ya = 0, sb = 0, xb = 0, yb = 0;
+            for (int y = 0; y < 120; ++y) for (int x = 0; x < 600; ++x)
+            { const double pa = A.getPixelAt (x, y).getAlpha(), pb = B.getPixelAt (x, y).getAlpha(); sa += pa; xa += pa * x; ya += pa * y; sb += pb; xb += pb * x; yb += pb * y; }
+            std::cout << "ink: drawText " << sa << " outline " << sb << "; centre offset x " << (xb / sb - xa / sa) << " px, y " << (yb / sb - ya / sa) << " px" << std::endl;
+        }
+        std::cout << "logo bounds (plate units): " << lb.toString() << std::endl;
+        std::cout << "brand pack written to " << out.getFullPathName() << std::endl;
+        return 0;
+    }
     if (mode == "mock")
     {
         Deck::Layout Lnd = landscape(), L2 = landscape();
