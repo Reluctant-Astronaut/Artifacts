@@ -1,3 +1,4 @@
+#include <complex>
 // Deck RA-1: renders the iPhone panel with the Artifacts suite's own drawing code.
 //
 // It compiles the suite editor (UI/PluginEditor.cpp) into this program, so the case, the plate, the print and its wear,
@@ -1278,6 +1279,281 @@ static Image composeUF (float scale)
     }
     return img;
 }
+
+// ------------------------------------------------------------------ the CHANNEL screen (iPad): EQ, inserts, sends, fader
+struct ChannelExtras
+{
+    Rectangle<float> eq, inserts[5], sends[5];
+    Point<float> pan;
+    Rectangle<float> fader;
+};
+static Layout ipadChannel (ChannelExtras& X)
+{
+    Layout L; L.name = "ipadch"; L.screenW = 1080; L.screenH = 810;
+    L.fullScreen = true; L.cornerR = 0.0f; L.pxScale = 2.0f;
+    L.armrestH = 56.0f;
+    L.plate = { 10.0f, 10.0f, 1060.0f, (float) L.screenH - 10.0f - L.armrestH };
+    const float W = L.plate.getWidth();
+    L.title = { 50.0f, 22.0f }; L.titleSize = 36.0f;
+    L.lamps.push_back ({ "link", -1, "link", { W - 84.0f, 42.0f } });
+    L.linkScale = 1.6f; L.linkLabel = { W - 84.0f, 69.0f };
+    L.grooveY = 96.0f;
+    L.maker = {};
+    // CLOSE, where SLEEP is on the main screen: back to the transport
+    L.keys.push_back ({ "close", 100, "CLOSE", "", { W - 84.0f - 56.0f - 128.0f, 23.0f, 128.0f, 40.0f }, false });
+    auto bracket = [&] (const char* t, float x, float w, float y) { L.brackets.push_back ({ t, Rectangle<int> ((int) x - 8, (int) y, (int) w + 16, 10) }); };
+    const float top = 142.0f;
+    // the strip, left and narrow: SOLO and MUTE, pan under them, a shorter fader
+    const float cx0 = 40.0f, cw = 142.0f, cxm = cx0 + cw * 0.5f;
+    bracket ("Channel", cx0, cw, 124.0f);
+    L.keys.push_back ({ "solo", 63, "SOLO", "", { cx0, top, cw * 0.5f - 4.0f, 44.0f }, false });
+    L.keys.push_back ({ "mute", 64, "MUTE", "", { cx0 + cw * 0.5f + 4.0f, top, cw * 0.5f - 4.0f, 44.0f }, false });
+    X.pan = { cxm, 248.0f };
+    X.fader = { cxm - 30.0f, 370.0f, 60.0f, 290.0f };
+    // the EQ: the whole width beside the strip, for finding a frequency exactly
+    const float ex = cx0 + cw + 36.0f, ew = W - 40.0f - ex;
+    bracket ("Equaliser", ex, ew, 124.0f);
+    // under it, as low as the plate allows: three inserts, three sends; the EQ takes all the height above them
+    const float rowH = 40.0f, gap = 7.0f, keyW = 72.0f, half = (ew - 36.0f) * 0.5f;
+    const float rowTop = 700.0f - 3.0f * rowH - 2.0f * gap;
+    X.eq = { ex, top, ew, rowTop - 36.0f - top };
+    bracket ("Inserts", ex, half, rowTop - 18.0f);
+    bracket ("Sends", ex + half + 36.0f, half, rowTop - 18.0f);
+    for (int i = 0; i < 3; ++i)
+    {
+        const float y = rowTop + (float) i * (rowH + gap);
+        X.inserts[i] = { ex, y, half - keyW - 8.0f, rowH };
+        L.keys.push_back ({ "byp" + String (i + 1), 107 + i, "BYPASS", "", { ex + half - keyW, y + 2.0f, keyW, rowH - 4.0f }, false });
+        const float sx = ex + half + 36.0f;
+        X.sends[i] = { sx, y, half - keyW - 8.0f, rowH };
+        L.keys.push_back ({ "send" + String (i + 1), 110 + i, "ON", "", { sx + half - keyW, y + 2.0f, keyW, rowH - 4.0f }, false });
+    }
+    return L;
+}
+
+// a band of Cubase's channel EQ, as the Deck draws it: type 0 low shelf, 1 peak, 2 high shelf
+struct EqBand { int type; double f, gainDb, q; bool on; const char* name; };
+static double bandDb (const EqBand& b, double f)
+{
+    if (! b.on) return 0.0;
+    const double sr = 48000.0, w0 = MathConstants<double>::twoPi * b.f / sr, A = std::pow (10.0, b.gainDb / 40.0);
+    const double cs = std::cos (w0), sn = std::sin (w0), al = sn / (2.0 * b.q);
+    double b0, b1, b2, a0, a1, a2;
+    if (b.type == 1) { b0 = 1 + al * A; b1 = -2 * cs; b2 = 1 - al * A; a0 = 1 + al / A; a1 = -2 * cs; a2 = 1 - al / A; }
+    else
+    {
+        const double s2 = 2.0 * std::sqrt (A) * al, sgn = b.type == 0 ? -1.0 : 1.0;
+        b0 = A * ((A + 1) + sgn * (A - 1) * cs + s2); b1 = -sgn * 2 * A * ((A - 1) + sgn * (A + 1) * cs); b2 = A * ((A + 1) + sgn * (A - 1) * cs - s2);
+        a0 = (A + 1) - sgn * (A - 1) * cs + s2; a1 = sgn * 2 * ((A - 1) - sgn * (A + 1) * cs); a2 = (A + 1) - sgn * (A - 1) * cs - s2;
+    }
+    const std::complex<double> z = std::polar (1.0, -MathConstants<double>::twoPi * f / sr);
+    const auto h = (b0 + b1 * z + b2 * z * z) / (a0 + a1 * z + a2 * z * z);
+    return 20.0 * std::log10 (std::abs (h));
+}
+
+static void paintEQ (Graphics& g, Rectangle<float> frame, const EqBand* bands, int selected)
+{
+    const Colour amber (0xffffb347);
+    paintVFDFrame (g, frame);
+    const auto gl = frame.reduced (8.0f);
+    vfdText (g, "7  LEAD VOX", { gl.getX() + 14.0f, gl.getY() + 8.0f, 260.0f, 28.0f }, 22.0f, Justification::centredLeft, true);
+    {   // EQ ON / OFF: the whole EQ in or out (tap)
+        const Rectangle<float> cell (gl.getRight() - 118.0f, gl.getY() + 8.0f, 104.0f, 28.0f);
+        g.setColour (amber.withAlpha (0.6f)); g.drawRoundedRectangle (cell, 3.0f, 1.4f);
+        vfdText (g, "EQ  ON", cell, 13.0f, Justification::centred, true);
+    }
+    // the plot: 20 Hz .. 20 kHz across, +/-24 dB up and down
+    const auto plot = Rectangle<float> (gl.getX() + 40.0f, gl.getY() + 44.0f, gl.getWidth() - 56.0f, gl.getHeight() - 44.0f - 78.0f);
+    const double range = 12.0;   // +/-12 dB on the screen: room for the small moves (Cubase's own range is +/-24)
+    auto xOf = [&] (double f) { return plot.getX() + plot.getWidth() * (float) (std::log (f / 20.0) / std::log (1000.0)); };
+    auto yOf = [&] (double db) { return plot.getCentreY() - plot.getHeight() * 0.5f * (float) (jlimit (-range, range, db) / range); };
+    for (double f : { 20.0, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0, 90.0, 100.0, 200.0, 300.0, 400.0, 500.0, 600.0, 700.0, 800.0, 900.0,
+                      1000.0, 2000.0, 3000.0, 4000.0, 5000.0, 6000.0, 7000.0, 8000.0, 9000.0, 10000.0, 20000.0 })
+    {
+        const bool major = f == 20.0 || f == 100.0 || f == 1000.0 || f == 10000.0 || f == 20000.0;
+        g.setColour (amber.withAlpha (major ? 0.16f : 0.06f));
+        g.fillRect (xOf (f) - 0.4f, plot.getY(), 0.8f, plot.getHeight());
+    }
+    for (auto [f, t] : { std::pair { 20.0, "20" }, std::pair { 30.0, "30" }, std::pair { 50.0, "50" }, std::pair { 100.0, "100" }, std::pair { 200.0, "200" },
+                         std::pair { 300.0, "300" }, std::pair { 500.0, "500" }, std::pair { 1000.0, "1k" }, std::pair { 2000.0, "2k" },
+                         std::pair { 3000.0, "3k" }, std::pair { 5000.0, "5k" }, std::pair { 10000.0, "10k" }, std::pair { 20000.0, "20k" } })
+        vfdText (g, t, Rectangle<float> (40.0f, 12.0f).withCentre ({ xOf (f), plot.getBottom() + 12.0f }), 9.0f, Justification::centred, false, 0.5f);
+    for (int db = -12; db <= 12; db += 3)
+    {
+        g.setColour (amber.withAlpha (db == 0 ? 0.22f : db % 6 == 0 ? 0.09f : 0.045f));
+        g.fillRect (plot.getX(), yOf (db) - 0.4f, plot.getWidth(), db == 0 ? 1.0f : 0.8f);
+        vfdText (g, db > 0 ? "+" + String (db) : String (db), { plot.getX() - 36.0f, yOf (db) - 6.0f, 30.0f, 12.0f }, 8.5f, Justification::centredRight, false, 0.45f);
+    }
+    // the selected band's own shape, filled faintly
+    {
+        Path p; p.startNewSubPath (plot.getX(), yOf (0));
+        for (float x = plot.getX(); x <= plot.getRight(); x += 1.5f)
+        {
+            const double f = 20.0 * std::pow (1000.0, (x - plot.getX()) / plot.getWidth());
+            p.lineTo (x, yOf (bandDb (bands[selected], f)));
+        }
+        p.lineTo (plot.getRight(), yOf (0)); p.closeSubPath();
+        g.setColour (amber.withAlpha (0.13f));
+        g.fillPath (p);
+    }
+    // the whole curve, glowing
+    Path c;
+    for (float x = plot.getX(); x <= plot.getRight(); x += 1.0f)
+    {
+        const double f = 20.0 * std::pow (1000.0, (x - plot.getX()) / plot.getWidth());
+        double db = 0; for (int b = 0; b < 4; ++b) db += bandDb (bands[b], f);
+        const float y = yOf (db);
+        if (x == plot.getX()) c.startNewSubPath (x, y); else c.lineTo (x, y);
+    }
+    for (auto [w, a] : { std::pair { 9.0f, 0.06f }, std::pair { 5.0f, 0.12f }, std::pair { 2.4f, 0.95f } })
+    {
+        g.setColour (amber.withAlpha (a));
+        g.strokePath (c, PathStrokeType (w, PathStrokeType::curved, PathStrokeType::rounded));
+    }
+    // the handles, on the curve: drag one with a finger (frequency across, gain up and down); a second finger spreads Q
+    for (int b = 0; b < 4; ++b)
+    {
+        double db = 0; for (int k = 0; k < 4; ++k) db += bandDb (bands[k], bands[b].f);
+        const Point<float> h (xOf (bands[b].f), yOf (db));
+        const bool sel = b == selected;
+        const float r = sel ? 17.0f : 13.0f;
+        if (sel)
+        {
+            g.setColour (amber.withAlpha (0.10f)); g.fillEllipse (Rectangle<float> (r * 4.4f, r * 4.4f).withCentre (h));   // under the finger
+            // Q: the band's width, marked either side of the handle
+            const double bw = std::asinh (1.0 / (2.0 * bands[b].q)) * 2.0 / std::log (2.0);   // octaves
+            const float x0 = xOf (bands[b].f / std::pow (2.0, bw * 0.5)), x1 = xOf (bands[b].f * std::pow (2.0, bw * 0.5));
+            g.setColour (amber.withAlpha (0.55f));
+            for (float xx : { x0, x1 }) { g.fillRect (xx - 0.6f, h.y - 10.0f, 1.2f, 20.0f); }
+            g.fillRect (x0, h.y - 0.6f, x1 - x0, 1.2f);
+        }
+        g.setColour (Colour (0xff070807)); g.fillEllipse (Rectangle<float> (r * 2.0f, r * 2.0f).withCentre (h));
+        g.setColour (amber.withAlpha (bands[b].on ? (sel ? 0.95f : 0.8f) : 0.3f));
+        if (sel) g.fillEllipse (Rectangle<float> (r * 2.0f, r * 2.0f).withCentre (h));
+        else g.drawEllipse (Rectangle<float> (r * 2.0f, r * 2.0f).withCentre (h), 1.8f);
+        g.setFont (KintsugiFonts::serif (sel ? 15.0f : 12.0f, true));
+        g.setColour (sel ? Colour (0xff1a0e04) : amber.withAlpha (bands[b].on ? 0.95f : 0.35f));
+        g.drawText (String (b + 1), Rectangle<float> (r * 2.0f, r * 2.0f).withCentre (h).translated (0.0f, 0.5f), Justification::centred);
+    }
+    // the four bands' values, in cells along the bottom (tap a cell: band on / off)
+    const char* types[3] = { "LOW SHELF", "PEAK", "HIGH SHELF" };
+    for (int b = 0; b < 4; ++b)
+    {
+        const float cw = gl.getWidth() / 4.0f;
+        const Rectangle<float> cell (gl.getX() + cw * (float) b + 5.0f, gl.getBottom() - 46.0f, cw - 10.0f, 40.0f);
+        g.setColour (amber.withAlpha (b == selected ? 0.6f : 0.25f));
+        g.drawRoundedRectangle (cell, 3.0f, b == selected ? 1.4f : 0.8f);
+        const auto& bd = bands[b];
+        const String fv = bd.f >= 1000.0 ? String (bd.f / 1000.0, bd.f >= 10000.0 ? 1 : 2) + " kHz" : String (roundToInt (bd.f)) + " Hz";
+        const String gv = (bd.gainDb > 0 ? "+" : "") + String (bd.gainDb, 1) + " dB";
+        vfdText (g, String (b + 1) + "  " + types[bd.type], cell.withHeight (18.0f).translated (10.0f, 2.0f).withWidth (cell.getWidth() * 0.5f), 9.0f, Justification::centredLeft, false, bd.on ? 0.7f : 0.3f);
+        vfdText (g, fv, cell.withHeight (18.0f).translated (0.0f, 2.0f).withTrimmedRight (10.0f), 13.0f, Justification::centredRight, true, bd.on ? 1.0f : 0.3f);
+        vfdText (g, gv, cell.withTrimmedTop (20.0f).withTrimmedRight (10.0f), 11.0f, Justification::centredRight, false, bd.on ? 0.85f : 0.25f);
+        vfdText (g, "Q " + String (bd.q, 1), cell.withTrimmedTop (20.0f).translated (10.0f, 0.0f), 10.0f, Justification::centredLeft, false, bd.on ? 0.55f : 0.25f);
+    }
+    vfdGlassSheen (g, gl);
+}
+
+// an insert or a send: its window (name; a send's level as a bar you drag)
+static void paintRow (Graphics& g, Rectangle<float> r, int index, const String& name, bool dim, float level, const String& value)
+{
+    const Colour amber (0xffffb347);
+    paintVFDFrame (g, r);
+    const auto gl = r.reduced (8.0f);
+    const bool empty = name.isEmpty();
+    vfdText (g, String (index), { gl.getX() + 6.0f, gl.getY(), 14.0f, level >= 0.0f ? 16.0f : gl.getHeight() }, 10.0f, Justification::centredLeft, false, 0.5f);
+    vfdText (g, empty ? String::fromUTF8 ("\xe2\x80\x94") : name, { gl.getX() + 22.0f, gl.getY(), gl.getWidth() - 26.0f, level >= 0.0f ? 16.0f : gl.getHeight() },
+             12.0f, Justification::centredLeft, true, empty ? 0.25f : dim ? 0.35f : 1.0f);
+    if (level >= 0.0f)
+    {
+        const auto bar = Rectangle<float> (gl.getX() + 22.0f, gl.getBottom() - 9.0f, gl.getWidth() - 74.0f, 5.0f);
+        const int segs = 24;
+        for (int s = 0; s < segs; ++s)
+        {
+            const bool on = (float) s / (float) segs < level;
+            g.setColour (amber.withAlpha (on ? (dim ? 0.3f : 0.9f) : 0.10f));
+            g.fillRect (bar.getX() + bar.getWidth() * (float) s / (float) segs, bar.getY(), bar.getWidth() / (float) segs - 1.5f, bar.getHeight());
+        }
+        vfdText (g, value, { gl.getRight() - 50.0f, gl.getBottom() - 14.0f, 48.0f, 14.0f }, 9.5f, Justification::centredRight, false, dim ? 0.35f : 0.8f);
+    }
+    vfdGlassSheen (g, gl);
+}
+
+// what is printed on the channel screen's plate and never changes: the strip's print and slot, the empty windows
+static void paintChannelStatic (Graphics& g, const ChannelExtras& X, bool frames = false, bool withScale = true)
+{
+    {   // the strip's print and its slot: the same as on the main screen
+        const Colour cream (Palette::cream);
+        g.setColour (cream);
+        const float tp = X.fader.getY(), len = X.fader.getHeight(), cx = X.fader.getCentreX();
+        auto yOf = [&] (float db) { const float p = db >= 0 ? 0.77f + db / 6.0f * 0.23f : 0.77f * std::pow (jmax (0.0f, (db + 72.0f) / 72.0f), 1.6f); return tp + (1.0f - p) * len; };
+        for (float db : { 6.0f, 0.0f, -6.0f, -12.0f, -24.0f, -36.0f, -48.0f, -60.0f })
+        if (withScale)
+        {
+            const float yy = yOf (db); const bool zero = db == 0.0f;
+            g.fillRect (cx - (zero ? 46.0f : 43.0f), yy - 0.75f, zero ? 12.0f : 9.0f, 1.5f);
+            g.fillRect (cx + 34.0f, yy - 0.75f, zero ? 12.0f : 9.0f, 1.5f);
+            g.setFont (KintsugiFonts::serif (9.5f, zero));
+            g.drawText (db > 0 ? "+" + String ((int) db) : String ((int) db), Rectangle<float> (cx - 80.0f, yy - 6.0f, 32.0f, 12.0f), Justification::centredRight);
+        }
+        g.setFont (KintsugiFonts::serif (11.5f).withExtraKerningFactor (0.08f));
+        g.drawText ("VOLUME", Rectangle<float> (cx - 50.0f, tp + len + 26.0f, 100.0f, 16.0f), Justification::centred);
+        g.drawText ("PAN", Rectangle<float> (X.pan.x - 50.0f, X.pan.y + 44.0f, 100.0f, 16.0f), Justification::centred);
+        g.setFont (KintsugiFonts::serif (8.5f).withExtraKerningFactor (0.04f));
+        g.drawText ("L", Rectangle<float> (X.pan.x - 52.0f, X.pan.y + 22.0f, 14.0f, 12.0f), Justification::centred);
+        g.drawText ("R", Rectangle<float> (X.pan.x + 38.0f, X.pan.y + 22.0f, 14.0f, 12.0f), Justification::centred);
+        const auto slot = Rectangle<float> (cx - 3.0f, tp - 18.0f, 6.0f, len + 36.0f);
+        g.setColour (Colours::white.withAlpha (0.14f)); g.fillRoundedRectangle (slot.translated (0.8f, 0.8f), 3.0f);
+        g.setColour (Colour (0xff050504)); g.fillRoundedRectangle (slot, 3.0f);
+        g.setColour (Colour (0xff2c2a26)); g.fillRect (slot.reduced (2.2f, 3.0f));
+    }
+    if (frames)
+    {
+        paintVFDFrame (g, X.eq);
+        for (int i = 0; i < 3; ++i) { paintVFDFrame (g, X.inserts[i]); paintVFDFrame (g, X.sends[i]); }
+    }
+}
+
+static Image composeChannel (float scale)
+{
+    ChannelExtras X;
+    Layout L = ipadChannel (X);
+    Image img = renderBackground (L, scale);
+    Graphics g (img);
+    g.addTransform (AffineTransform::scale (scale));
+    g.addTransform (AffineTransform::translation (L.plate.getX(), L.plate.getY()));
+    KintsugiLookAndFeel lnf;
+    paintChannelStatic (g, X);
+    const EqBand bands[4] = { { 0, 90.0, -2.0, 0.7, true, "" }, { 1, 320.0, -3.0, 1.4, true, "" }, { 1, 3200.0, 2.5, 1.2, true, "" }, { 2, 11000.0, 3.0, 0.7, true, "" } };
+    paintEQ (g, X.eq, bands, 2);
+    const char* ins[5] = { "EQUANIMITY", "KINTSUGI", "PRO-Q 3", "CONSOLE RA-1", "" };
+    for (int i = 0; i < 3; ++i) paintRow (g, X.inserts[i], i + 1, ins[i], i == 2, -1.0f, {});
+    const char* snd[5] = { "DUALITY", "ANEMOIA", "VOX BUS", "", "" };
+    const float lv[5] = { 0.72f, 0.55f, 0.8f, 0.0f, 0.0f };
+    const char* sv[5] = { "-6.0 dB", "-12.5 dB", "-3.0 dB", "", "" };
+    for (int i = 0; i < 3; ++i) paintRow (g, X.sends[i], i + 1, snd[i], i == 1, snd[i][0] ? lv[i] : -1.0f, sv[i]);
+    // pan and fader
+    {
+        juce::Slider ps; ps.getProperties().set ("pointer", true); ps.getProperties().set ("creamPointer", true);
+        const float st = MathConstants<float>::pi * 1.25f, en = MathConstants<float>::pi * 2.75f, size = 92.0f;
+        lnf.drawPointerKnob (g, (int) (X.pan.x - size * 0.5f), (int) (X.pan.y - size * 0.5f), (int) size, (int) size, st + 0.42f * (en - st), ps);
+        juce::Slider f; f.setSliderStyle (juce::Slider::LinearVertical); f.getProperties().set ("fader", true);
+        const float p = 0.75f - 4.5f / 60.0f * 0.75f;
+        const float yy = X.fader.getY() + (1.0f - p) * X.fader.getHeight(), cx = X.fader.getCentreX();
+        Graphics::ScopedSaveState ss (g);
+        g.addTransform (AffineTransform::scale (1.6f, 1.6f, cx, yy));
+        lnf.drawLinearSlider (g, (int) X.fader.getX(), (int) yy, (int) X.fader.getWidth(), 0, yy, yy, yy, juce::Slider::LinearVertical, f);
+    }
+    // keys: inserts 1, 2, 4 running (BYPASS dark), 3 bypassed (lit); sends 1 and 3 on, 2 off
+    for (auto& k : L.keys) paintKey (g, k, k.id == "byp3" || k.id == "send1" || k.id == "send3");
+    for (auto& l : L.lamps)
+    {
+        Graphics::ScopedSaveState ss (g);
+        g.addTransform (AffineTransform::scale (L.linkScale, L.linkScale, l.c.x, l.c.y));
+        paintLamp (g, l.c, "green", 1.0f);
+    }
+    return img;
+}
 } // namespace Deck
 
 int main (int argc, char** argv)
@@ -1418,6 +1694,12 @@ int main (int argc, char** argv)
         std::cout << "screens written to " << out.getFullPathName() << std::endl;
         return 0;
     }
+    if (mode == "channel")   // the iPad's CHANNEL screen (mock-up)
+    {
+        savePNG (composeChannel (2.0f), out.getChildFile ("Deck-RA1-iPad-Channel.png"));
+        std::cout << "written" << std::endl;
+        return 0;
+    }
     if (mode == "uf1")   // the iPad as a one-channel control surface (mock-up)
     {
         savePNG (composeUF (2.0f), out.getChildFile ("Deck-RA1-iPad-UF.png"));
@@ -1515,6 +1797,36 @@ int main (int argc, char** argv)
                  << ",\"faderCap\":[" << num (capArea.getX()) << "," << num (capArea.getY()) << "," << num (capArea.getWidth()) << "," << num (capArea.getHeight()) << "]"
                  << ",\"pan\":[" << num (X.pan.x) << "," << num (X.pan.y) << "," << num (cell) << "," << frames << "]"
                  << ",\"display\":[" << num (glass.getX()) << "," << num (glass.getY()) << "," << num (glass.getWidth()) << "," << num (glass.getHeight()) << "]}";
+        }
+        {   // ---- the iPad: the CHANNEL screen (EQ, inserts, sends, fader). Its fader cap and pan knob are the main screen's.
+            Deck::ChannelExtras X;
+            Deck::Layout L = Deck::ipadChannel (X);
+            const float s = L.pxScale;
+            Image bg = renderBackground (L, s);
+            {
+                Graphics g (bg);
+                g.addTransform (AffineTransform::scale (s));
+                g.addTransform (AffineTransform::translation (L.plate.getX(), L.plate.getY()));
+                paintChannelStatic (g, X, true, false);
+            }
+            savePNG (bg, out.getChildFile ("bg-ipadch.png"));
+            for (auto& k : L.keys)
+                for (int lit = 0; lit < 2; ++lit)
+                {
+                    const float pad = keyPad (k);
+                    auto img = sprite (k.r.expanded (pad), s, [&] (Graphics& g) { paintKey (g, k, lit == 1); });
+                    savePNG (img, out.getChildFile ("key-ipadch-" + k.id + (lit ? "-down" : "-up") + ".png"));
+                }
+            auto num = [] (float v) { return String (v, 2); };
+            auto rect = [&] (Rectangle<float> r) { return "[" + num (r.getX()) + "," + num (r.getY()) + "," + num (r.getWidth()) + "," + num (r.getHeight()) + "]"; };
+            const Rectangle<float> capArea (-48.0f, -54.0f, 104.0f, 124.0f);
+            json << ",\"ipadch\":" << layoutJSON (L).dropLastCharacters (1)
+                 << ",\"scale\":" << String (s, 0)
+                 << ",\"fader\":" << rect (X.fader) << ",\"faderCap\":" << rect (capArea)
+                 << ",\"pan\":[" << num (X.pan.x) << "," << num (X.pan.y) << ",100,61]"
+                 << ",\"eq\":" << rect (X.eq.reduced (8.0f))
+                 << ",\"inserts\":[" << rect (X.inserts[0].reduced (8.0f)) << "," << rect (X.inserts[1].reduced (8.0f)) << "," << rect (X.inserts[2].reduced (8.0f)) << "]"
+                 << ",\"sends\":[" << rect (X.sends[0].reduced (8.0f)) << "," << rect (X.sends[1].reduced (8.0f)) << "," << rect (X.sends[2].reduced (8.0f)) << "]}";
         }
         for (auto c : { "amber", "red", "green" })
             for (int lit = 0; lit < 2; ++lit)
