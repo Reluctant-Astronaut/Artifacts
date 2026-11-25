@@ -3849,7 +3849,7 @@ void ArtifactsEditor::layoutPanel()
     if (mockVariant == 3)
     {
         auto shift = [] (Knob& k, int dx, int dy) { k.slider.setBounds (k.slider.getBounds().translated (dx, dy)); k.readout.setBounds (k.readout.getBounds().translated (dx, dy)); };
-        const auto rev = addSection ("Plate", 3, colW, &consoleLamp);
+        const auto rev = addSection ("EMT-140", 3, colW, &consoleLamp);
         placeKnob (*cDrive, 0, 0, rev); placeKnob (*hum, 1, 0, rev); placeKnob (*glue, 2, 0, rev);
         placeKnob (*tone, 0, 1, rev); placeKnob (*drift, 1, 1, rev); placeKnob (*flutter, 2, 1, rev);
         {
