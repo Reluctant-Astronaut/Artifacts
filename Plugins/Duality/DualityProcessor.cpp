@@ -96,7 +96,13 @@ void DualityProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     for (auto* f : { &hp[0], &hp[1], &lp[0], &lp[1] }) f->reset();
     appliedLow = appliedHigh = -1.0f;
     duckEnv = -100.0f; duckGain = 1.0f; duckHold = 0;
-    deSplit.reset(); designLP (deSplit, sampleRate, 4500.0, 0.7071); deHi = deLo = 0.0f; deGain = 1.0f;
+    deSplit.reset(); designLP (deSplit, sampleRate, 4500.0, 0.7071);
+    for (int c = 0; c < 2; ++c)   // the EMT 140's own voice: measured, within 2 dB in every octave from 63 Hz to 12 kHz
+    {
+        voiceHP[c].reset(); voiceLP[c].reset();
+        designHP (voiceHP[c], sampleRate, 230.0, 0.6);
+        designLP (voiceLP[c], sampleRate, jmin (2100.0, sampleRate * 0.45), 0.6);
+    } deHi = deLo = 0.0f; deGain = 1.0f;
 
     sPre.reset (sampleRate, 0.08); sWidth.reset (sampleRate, 0.05); sMix.reset (sampleRate, 0.05);
     sOut.reset (sampleRate, 0.03); gPlate.reset (sampleRate, 0.08); sLow.reset (sampleRate, 0.05); sHigh.reset (sampleRate, 0.05);
@@ -162,12 +168,12 @@ void DualityProcessor::processBlock (AudioBuffer<float>& buffer, MidiBuffer&)
             preDelay.pushSample (0, 0.5f * (inL[i] + inR[i]));
             float x = preDelay.popSample (0, sPre.getNextValue());
             x = hp[1].process (hp[0].process (x));
-            // the de-esser: above 4.5 kHz may not be louder than a third of what is below it; an S is held down to that
+            // the de-esser: above 4.5 kHz may not be louder than half of what is below it; an S is held down to that
             const float lo = deSplit.process (x), hi = x - lo;
             deHi += (std::abs (hi) > deHi ? eAtk : eRel) * (std::abs (hi) - deHi);
             deLo += (std::abs (lo) > deLo ? eAtk : eRel) * (std::abs (lo) - deLo);
-            const float allowed = 0.33f * deLo + 1.0e-6f;
-            const float target = deHi > allowed ? juce::jmax (0.1f, allowed / deHi) : 1.0f;
+            const float allowed = 0.5f * deLo + 1.0e-6f;
+            const float target = deHi > allowed ? juce::jmax (0.25f, allowed / deHi) : 1.0f;
             deGain += (target < deGain ? dAtk : dRel) * (target - deGain);
             x = lo + hi * deGain;
             x = lp[1].process (lp[0].process (x));
@@ -178,6 +184,11 @@ void DualityProcessor::processBlock (AudioBuffer<float>& buffer, MidiBuffer&)
         // a longer plate holds more energy: part of that is taken back, so a long plate sits at about the level of a short one
         const float levelTrim = std::pow (2.2f / rt, 0.25f);
         plate.process (send.data(), wL, wR, n);
+        for (int i = 0; i < n; ++i)
+        {
+            wL[i] = voiceLP[0].process (voiceHP[0].process (wL[i]));
+            wR[i] = voiceLP[1].process (voiceHP[1].process (wR[i]));
+        }
 
         // Duck: follows the dry voice. While it sings the plate steps back (up to 24 dB); the moment it stops,
         // the plate comes back up within a fifth of a second, so the tail blooms in the gap.
@@ -199,7 +210,7 @@ void DualityProcessor::processBlock (AudioBuffer<float>& buffer, MidiBuffer&)
                 target = Decibels::decibelsToGain (-24.0f * duck * amount);
             }
             duckGain += (target < duckGain ? gAtk : gRel) * (target - duckGain);
-            const float g = gPlate.getNextValue() * duckGain * 1.0f * levelTrim;
+            const float g = gPlate.getNextValue() * duckGain * 1.6f * levelTrim;   // 1.6: the EMT voicing takes ~4 dB, given back
             wL[i] *= g; wR[i] *= g;
         }
     }

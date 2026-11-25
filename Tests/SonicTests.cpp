@@ -1403,6 +1403,27 @@ static void plateProbe (double sr)
         row ("plate", "duck" + String (duck, 1) + "_gap_0.35to0.85s_dB", gap2, "INFO");
     }
 }
+
+// Duality: the plate's impulse response as a WAV (to lay beside a real plate's)
+static void plateIR (double sr, float decay, float damp, const File& out)
+{
+    Rig r (sr);
+    r.set ("perspective", 0); r.norm ("mix", 1.0f); r.set ("pduck", 0.0f); r.set ("ppre", 0.0f);
+    r.set ("plowcut", 20.0f); r.set ("phighcut", 20000.0f); r.set ("pdecay", decay); r.norm ("pdamp", damp);
+    r.reset();   // start with every setting already in place (no smoothing from the defaults)
+    const int n = (int) (sr * (decay * 1.6 + 0.5));
+    Buf x ((size_t) n, 0.0f), oL, oR; x[0] = 1.0f;
+    r.process (x, x, oL, oR);
+    // a plain 32-bit float WAV
+    MemoryOutputStream m;
+    const uint32 dataBytes = (uint32) n * 8u;
+    m.write ("RIFF", 4); m.writeInt ((int) (36 + dataBytes)); m.write ("WAVE", 4);
+    m.write ("fmt ", 4); m.writeInt (16); m.writeShort (3); m.writeShort (2); m.writeInt ((int) sr);
+    m.writeInt ((int) sr * 8); m.writeShort (8); m.writeShort (32);
+    m.write ("data", 4); m.writeInt ((int) dataBytes);
+    for (int i = 0; i < n; ++i) { m.writeFloat (oL[(size_t) i]); m.writeFloat (oR[(size_t) i]); }
+    out.replaceWithData (m.getData(), m.getDataSize());
+}
 int main (int argc, char** argv)
 {
     ScopedJuceInitialiser_GUI init;
@@ -1420,6 +1441,7 @@ int main (int argc, char** argv)
     if (argc > 2 && String (argv[2]) == "uiprobe") { uiProbe (sr); return 0; }
     if (argc > 2 && String (argv[2]) == "hiprobe") { hiProbe(); return 0; }
     if (argc > 2 && String (argv[2]) == "plateprobe") { plateProbe (sr); return 0; }
+    if (argc > 5 && String (argv[2]) == "plateir") { plateIR (sr, String (argv[3]).getFloatValue(), String (argv[4]).getFloatValue(), File (argv[5])); return 0; }
     if (gName.contains ("Equanimity")) { testEquanimity (sr); return 0; }
     testLatency (sr);
     testNull (sr);

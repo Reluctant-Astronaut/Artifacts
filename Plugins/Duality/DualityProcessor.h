@@ -64,6 +64,8 @@ private:
         void reset() { z1 = z2 = 0; }
     } hp[2], lp[2];   // two in a row each: 24 dB per octave, as steep as the classic filters
     float appliedLow = -1.0f, appliedHigh = -1.0f;
+    // the plate's own voice, measured from a real EMT 140: lean under 250 Hz, round above 2 kHz (on the wet, both sides)
+    Biquad voiceHP[2], voiceLP[2];
 
     // De-esser on the send, always on: an S goes into the plate softened, so the tail never hisses
     Biquad deSplit; float deHi = 0.0f, deLo = 0.0f, deGain = 1.0f;

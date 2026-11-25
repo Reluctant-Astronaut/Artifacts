@@ -38,8 +38,11 @@ public:
         tR = { n (353), n (3627), n (1228), n (2673), n (2111), n (335), n (121) };
 
         // the plate's thin low end: a gentle high-pass inside the tank, so the lows decay faster than the mids
-        airCoef = (float) std::exp (-juce::MathConstants<double>::twoPi * juce::jmin (11000.0, sr * 0.45) / sr);
-        lowLeak = (float) (1.0 - std::exp (-juce::MathConstants<double>::twoPi * 110.0 / sr));
+        // the tank's filters, matched to a real EMT 140's decay per band (White Sea Studio's, measured from its impulse response):
+        // under 250 Hz the plate dies at ~80% of its 1 kHz time, 8 kHz at ~90%, 12 kHz at ~85% (the EMT: 82, 92, 71%)
+        airHz = 11000.0; lowAmt = 0.45f; dampHi = 40000.0; dampLo = 4000.0;
+        airCoef = (float) std::exp (-juce::MathConstants<double>::twoPi * juce::jmin (airHz, sr * 0.45) / sr);
+        lowLeak = (float) (1.0 - std::exp (-juce::MathConstants<double>::twoPi * 500.0 / sr));
         reset();
         setParameters (2.0f, 0.3f);
     }
@@ -62,7 +65,7 @@ public:
         for (int s = 0; s < 2; ++s)
             decay[s] = (float) std::pow (10.0, -3.0 * (double) halfLoop[s] / (2.0 * (double) rt60));
         damping = juce::jlimit (0.0f, 1.0f, damping);
-        const double fc = juce::jmin (9000.0 * std::pow (1800.0 / 9000.0, (double) damping), sr * 0.45);   // 9 kHz open, 1.8 kHz dark
+        const double fc = juce::jmin (dampHi * std::pow (dampLo / dampHi, (double) damping), sr * 0.45);   // 9 kHz open, 1.8 kHz dark
         dampCoef = (float) std::exp (-juce::MathConstants<double>::twoPi * fc / sr);
     }
 
@@ -97,10 +100,10 @@ public:
                 if (! freeze)
                 {
                     damp[s] += (1.0f - dampCoef) * (d - damp[s]);   // highs fade inside the tank
-                    air[s] += (1.0f - airCoef) * (damp[s] - air[s]);  // and the very top faster still, as on a steel plate:
+                    air[s] = airHz > 0.0 ? air[s] + (1.0f - airCoef) * (damp[s] - air[s]) : damp[s];  // and the very top faster still, as on a steel plate:
                                                                        // the hiss of an S must not ring on in the tail
                     low[s] += lowLeak * (air[s] - low[s]);
-                    d = air[s] - 0.08f * low[s];                    // and the lows a little too: a plate is lean underneath
+                    d = air[s] - lowAmt * low[s];                    // and the lows a little too: a plate is lean underneath
                 }
                 d *= dk[s];
                 d = decayAP[s].allpass (d, 0.50f);
@@ -158,6 +161,7 @@ private:
     Line inDiff[4], modAP[2], delayA[2], decayAP[2], delayB[2];
     float baseMod[2] {}, excursion = 12.0f, halfLoop[2] { 0.3f, 0.3f };
     std::array<int, 7> tL {}, tR {};
+    double airHz = 11000.0, dampHi = 9000.0, dampLo = 1800.0; float lowAmt = 0.08f;
     float rt60 = 2.0f, decay[2] { 0.7f, 0.7f }, dampCoef = 0.3f, airCoef = 0.3f, damp[2] {}, air[2] {}, tankFeed[2] {}, low[2] {}, lowLeak = 0.01f;
     float outGain = 0.6f;
     bool freeze = false;
