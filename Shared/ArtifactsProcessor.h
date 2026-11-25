@@ -15,11 +15,24 @@ struct IRInfo
 struct WordsView
 {
     bool ara = false;                 // bound to an event (otherwise the window shows its demo line)
+    struct Word { juce::String text; double t0 = 0, t1 = 0; float confidence = 1.0f; bool selected = false, editing = false; int id = -1; };
+    std::vector<Word> words;          // the event's words, at their times in the event (seconds)
+    float progress = -1.0f;           // transcribing: 0..1 (the words come in as they are heard); -1 when not
+    juce::String status;              // instead of the word count: what the listening is doing, or what went wrong
     juce::String track, clip;         // the track's and the event's names
     std::vector<float> peaks;         // the event's waveform, one peak per 10 ms, 0..1 (empty while it is read)
     double length = 0.0;              // seconds
     double playhead = -1.0;           // seconds into the event (-1: not inside it)
     bool playing = false;
+};
+
+// What the Words window asks of the vocal's words (ids are WordsView::Word::id)
+struct WordsAction
+{
+    enum Kind { select, edit, remove, transcribe, lyrics, locate } kind = select;
+    int first = -1, last = -1;        // select: the range (-1: none); edit: first; remove: the range
+    juce::String text;                // edit: the new text ("" removes the word); lyrics: the lyrics
+    double time = 0.0;                // locate: seconds into the event
 };
 
 // The common face of all four Artifacts plugins: the parameter tree, and the numbers the shared
@@ -49,6 +62,7 @@ public:
     virtual void loadIRPreset (int) {}
     // Duality: the vocal event it is bound to (ARA), for the Words window (message thread)
     virtual WordsView getWordsView() { return {}; }
+    virtual void wordsAction (const WordsAction&) {}
 
     juce::AudioProcessorValueTreeState apvts;
 

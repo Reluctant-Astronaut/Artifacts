@@ -51,6 +51,7 @@ public:
 
     static juce::AudioProcessorValueTreeState::ParameterLayout createLayout();
     WordsView getWordsView() override;
+    void wordsAction (const WordsAction&) override;
 
 private:
     void updateFilters (float lowCut, float highCut);
@@ -106,6 +107,8 @@ private:
     DualityARA::DocumentController* araDoc = nullptr;   // the document of this instance (audio thread's copy)
     const void* araTrack = nullptr;                     // the track this instance plays
     DualityARA::Settings* araSettings = nullptr;
+    // the event the editor shows: what is selected in the host, else what this instance plays, else the track shown last
+    bool pickRegion (juce::ARAPlaybackRegion*& region, DualityARA::DocumentController*& doc);
     // the editor's side: which track it shows, and the settings as last agreed between its knobs and the document
     const void* editTrack = nullptr;
     std::array<float, 10> mirror {};

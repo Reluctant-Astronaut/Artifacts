@@ -13,6 +13,10 @@
 #include <map>
 #include <array>
 #include <mutex>
+#include <deque>
+#if DUALITY_WORDS
+ #include "DualityWords.h"
+#endif
 
 namespace DualityARA
 {
@@ -83,6 +87,28 @@ namespace DualityARA
         std::atomic<double> songTime { -1.0 };
         std::atomic<bool> playing { false };
 
+        ~DocumentController() override;
+
+       #if DUALITY_WORDS
+        // the words of each recording (audio source), heard once in the background and kept with the project.
+        // All of these are for the message thread.
+        enum class Hearing { none, waiting, fetching, reading, hearing, done, failed };
+        struct Words
+        {
+            std::vector<DualityWords::Word> words;   // in the recording's own time
+            Hearing state = Hearing::none;
+            float progress = 0.0f;
+            juce::String error, lyrics;               // lyrics: pasted while it was still listening, placed when it is done
+        };
+        Words wordsOf (juce::ARAAudioSource*);
+        void hear (juce::ARAAudioSource*, bool again);            // if not heard yet (or again)
+        void selectWords (juce::ARAAudioSource*, int first, int last, double from, double to);   // -1: none (only those in [from, to])
+        void editWord (juce::ARAAudioSource*, int index, const juce::String& text);   // "" removes it; "two words" splits it
+        void removeWords (juce::ARAAudioSource*, int first, int last);
+        void placeLyrics (juce::ARAAudioSource*, const juce::String& lyrics);
+       #endif
+
+    protected:
     protected:
         void willBeginEditing (juce::ARADocument*) override { editLock.enterWrite(); }
         void didEndEditing (juce::ARADocument*) override    { editLock.exitWrite(); }
@@ -97,6 +123,17 @@ namespace DualityARA
         std::mutex settingsMutex;
         std::map<const void*, std::unique_ptr<Settings>> byTrack;
         std::map<const void*, std::array<float, numShared>> restored;   // from the project: by audio modification
+       #if DUALITY_WORDS
+        std::mutex wordsMutex;
+        std::map<std::string, Words> wordsBySource;   // by the audio source's persistent ID
+        struct Job { std::string id; std::shared_ptr<std::unique_ptr<juce::AudioFormatReader>> reader; double sampleRate; juce::int64 length; int channels; };
+        std::deque<Job> jobs;
+        std::atomic<bool> stopping { false };
+        std::unique_ptr<juce::Thread> listener;
+        void listen (juce::Thread&);   // the listener thread: one recording at a time
+        void setHearing (const std::string& id, Hearing h, float progress, const juce::String& error = {});
+        DualityWords::Ears ears;
+       #endif
     };
 }
 

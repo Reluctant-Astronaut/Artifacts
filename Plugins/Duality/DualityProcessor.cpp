@@ -343,17 +343,13 @@ void DualityProcessor::setStateInformation (const void* data, int sizeInBytes)
 AudioProcessorEditor* DualityProcessor::createEditor() { return new ArtifactsEditor (*this); }
 AudioProcessor* JUCE_CALLTYPE createPluginFilter() { return new DualityProcessor(); }
 
-//==============================================================================
-// The Words window's view of the vocal event (ARA): its names, its waveform (read once, in the background), where the song is.
-WordsView DualityProcessor::getWordsView()
+#if JucePlugin_Enable_ARA
+bool DualityProcessor::pickRegion (ARAPlaybackRegion*& region, DualityARA::DocumentController*& doc)
 {
-    WordsView v;
-   #if JucePlugin_Enable_ARA
-    if (! isBoundToARA()) return v;
-    v.ara = true;
+    if (! isBoundToARA()) return false;
     // Cubase shows the editor in an instance of its own, which plays nothing: the event comes from what is selected,
     // else what this instance plays, else the track shown last, else the document's first track
-    ARAPlaybackRegion* region = nullptr;
+    region = nullptr; doc = nullptr;
     ARA::PlugIn::DocumentController* araDC = nullptr;
     if (auto* ev = getEditorView())
     {
@@ -368,8 +364,8 @@ WordsView DualityProcessor::getWordsView()
     }
     if (auto* r = getEditorRenderer())
         if (araDC == nullptr) araDC = r->getDocumentController();
-    auto* doc = araDC != nullptr ? ARADocumentControllerSpecialisation::getSpecialisedDocumentController<DualityARA::DocumentController> (araDC) : nullptr;
-    if (doc == nullptr) return v;
+    doc = araDC != nullptr ? ARADocumentControllerSpecialisation::getSpecialisedDocumentController<DualityARA::DocumentController> (araDC) : nullptr;
+    if (doc == nullptr) return false;
     if (region == nullptr)
     {
         ARARegionSequence* pick = nullptr;
@@ -377,7 +373,21 @@ WordsView DualityProcessor::getWordsView()
             if (! seq->getPlaybackRegions().empty() && (pick == nullptr || seq == editTrack)) pick = seq;
         if (pick != nullptr) region = pick->getPlaybackRegions().front();
     }
-    if (region == nullptr) return v;
+    return region != nullptr;
+}
+#endif
+
+//==============================================================================
+// The Words window's view of the vocal event (ARA): its names, its waveform (read once, in the background), where the song is.
+WordsView DualityProcessor::getWordsView()
+{
+    WordsView v;
+   #if JucePlugin_Enable_ARA
+    if (! isBoundToARA()) return v;
+    v.ara = true;
+    ARAPlaybackRegion* region = nullptr;
+    DualityARA::DocumentController* doc = nullptr;
+    if (! pickRegion (region, doc)) return v;
 
     // the knobs and the document agree: the track's settings on a new track, then whichever side moved
     {
@@ -421,6 +431,35 @@ WordsView DualityProcessor::getWordsView()
     }
     v.playing = doc->playing.load();
 
+   #if DUALITY_WORDS
+    // the words: this event's part of its recording's words, in the event's time; heard the first time it is shown
+    {
+        auto words = doc->wordsOf (source);
+        using H = DualityARA::DocumentController::Hearing;
+        if (words.state == H::none) { doc->hear (source, false); words = doc->wordsOf (source); }
+        const double end = startInSource + length;
+        for (int i = 0; i < (int) words.words.size(); ++i)
+        {
+            const auto& w = words.words[(size_t) i];
+            if (w.t1 <= startInSource || w.t0 >= end) continue;
+            WordsView::Word x; x.text = w.text; x.t0 = w.t0 - startInSource; x.t1 = w.t1 - startInSource;
+            x.confidence = w.confidence; x.selected = w.selected; x.id = i;
+            v.words.push_back (x);
+        }
+        auto pc = [] (float p) { return String (roundToInt (jlimit (0.0f, 1.0f, p) * 100.0f)) + "%"; };
+        switch (words.state)
+        {
+            case H::none:     v.status = "WAITING FOR THE HOST TO SHARE THE AUDIO"; break;
+            case H::waiting:  v.status = "ABOUT TO LISTEN"; v.progress = 0.0f; break;
+            case H::reading:  v.status = "READING THE VOCAL " + pc (words.progress); v.progress = 0.0f; break;
+            case H::fetching: v.status = "FETCHING THE LISTENING MODEL " + pc (words.progress) + " (ONCE)"; v.progress = words.progress; break;
+            case H::hearing:  v.status = "HEARING THE WORDS " + pc (words.progress); v.progress = words.progress; break;
+            case H::failed:   v.status = words.error + String::fromUTF8 ("  \xc2\xb7  PRESS TRANSCRIBE TO TRY AGAIN"); break;
+            case H::done:     if (v.words.empty()) v.status = "NO WORDS HEARD"; break;
+        }
+    }
+   #endif
+
     // the waveform: one peak per 10 ms of the event's own audio, read once per event (and again if it is trimmed)
     const auto key = String::toHexString ((pointer_sized_int) source) + ":" + String (startInSource, 3) + ":" + String (length, 3);
     {
@@ -458,4 +497,29 @@ WordsView DualityProcessor::getWordsView()
     });
    #endif
     return v;
+}
+
+void DualityProcessor::wordsAction (const WordsAction& a)
+{
+   #if JucePlugin_Enable_ARA && DUALITY_WORDS
+    ARAPlaybackRegion* region = nullptr;
+    DualityARA::DocumentController* doc = nullptr;
+    if (! pickRegion (region, doc)) return;
+    auto* source = region->getAudioModification()->getAudioSource();
+    const double from = region->getStartInAudioModificationTime(), to = from + region->getDurationInAudioModificationTime();
+    switch (a.kind)
+    {
+        case WordsAction::select:     doc->selectWords (source, a.first, a.last, from, to); break;
+        case WordsAction::edit:       doc->editWord (source, a.first, a.text); break;
+        case WordsAction::remove:     doc->removeWords (source, a.first, a.last); break;
+        case WordsAction::transcribe: doc->hear (source, true); break;
+        case WordsAction::lyrics:     doc->placeLyrics (source, a.text); break;
+        case WordsAction::locate:
+            if (auto* pc = doc->getDocumentController()->getHostPlaybackController())
+                pc->requestSetPlaybackPosition (region->getStartInPlaybackTime() + a.time);
+            break;
+    }
+   #else
+    ignoreUnused (a);
+   #endif
 }

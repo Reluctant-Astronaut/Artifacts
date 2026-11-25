@@ -123,9 +123,45 @@ public:
     // live: Duality is an ARA extension on a vocal event; the window shows that event's waveform, following the song
     bool live = false;
     WordsView view;
-    void setView (WordsView v) { live = v.ara; view = std::move (v); repaint(); }
+    void setView (WordsView v);
+    // what the window asks of the words (select, correct, transcribe again, place the lyrics, move the song)
+    std::function<void (const WordsAction&)> onAction;
+
+    void mouseDown (const juce::MouseEvent&) override;
+    void mouseDrag (const juce::MouseEvent&) override;
+    void mouseUp (const juce::MouseEvent&) override;
+    void mouseDoubleClick (const juce::MouseEvent&) override;
+    void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
+    bool keyPressed (const juce::KeyPress&) override;
+    void resized() override;
 private:
     void paintLive (juce::Graphics&);
+    // where things were drawn, for the mouse
+    struct Hit { juce::Rectangle<float> box; int index; };   // index into view.words
+    std::vector<Hit> hits;
+    juce::Rectangle<float> transcribeKey, lyricsKey, wordRow, waveArea;
+    double shownT0 = 0.0, shownSpan = 10.0; float shownX0 = 0, shownW = 1;
+    double scrollT0 = -1.0;   // the song stopped: where the window was scrolled to (-1: following the song)
+    int anchor = -1;          // the word a drag started on
+    bool dragged = false;
+    int hitAt (juce::Point<float>, bool nearest) const;
+    void selectRange (int a, int b);
+    // correcting a word: a text field over it
+    std::unique_ptr<juce::TextEditor> wordField;
+    int editingId = -1;
+    void beginEdit (int index);
+    void endEdit (bool keep);
+    // the lyrics as written: a page over the window
+    std::unique_ptr<juce::TextEditor> lyricsPage;
+    struct KeyLook : juce::LookAndFeel_V4   // (before the keys: it outlives them)
+    {
+        juce::Font getTextButtonFont (juce::TextButton&, int) override;
+        void drawButtonBackground (juce::Graphics&, juce::Button&, const juce::Colour&, bool, bool) override;
+    } keyLook;
+    std::unique_ptr<juce::TextButton> placeKey, cancelKey;
+    void closeLyrics (bool place);
+public:
+    void openLyrics();
 };
 
 // Duality: the Apply plate, six keys that put an effect on the selected words

@@ -2146,17 +2146,113 @@ void WordsWindow::paintLive (juce::Graphics& g)
     String name = view.track.isNotEmpty() ? view.track.toUpperCase() : String ("VOCAL");
     if (view.clip.isNotEmpty() && view.clip != view.track) name << String::fromUTF8 ("  \xc2\xb7  ") << view.clip.toUpperCase();
     g.drawText (name, Rectangle<float> (x0, r.getY() + 6.0f, w * 0.6f, 14.0f), Justification::centredLeft);
-    const String st = "ARA  " + String::fromUTF8 ("\xc2\xb7  ") + (view.playhead >= 0.0 ? clockText (view.playhead) + " / " : String()) + clockText (view.length)
-                    + String::fromUTF8 ("  \xc2\xb7  ") + "WORDS: TRANSCRIPTION COMES NEXT";
-    g.drawText (st, Rectangle<float> (x0 + w * 0.4f, r.getY() + 6.0f, w * 0.6f, 14.0f), Justification::centredRight);
+    const bool hasWords = ! view.words.empty() || view.progress >= 0.0f;
+    // the two keys at the header's right: hear the words again, or give the lyrics as written
+    float keysX = x0 + w;
+    if (hasWords)
+        for (auto* label : { "PASTE LYRICS", "TRANSCRIBE" })
+        {
+            const float kw = GlyphArrangement::getStringWidth (g.getCurrentFont(), label) + 14.0f;
+            keysX -= kw;
+            auto k = Rectangle<float> (keysX, r.getY() + 5.0f, kw, 15.0f);
+            const bool busy = view.progress >= 0.0f && String (label) == "TRANSCRIBE";
+            (String (label) == "TRANSCRIBE" ? transcribeKey : lyricsKey) = k;
+            g.setColour (busy ? Colour (0xffc4561a).withAlpha (0.18f) : ink.withAlpha (0.06f));
+            g.fillRoundedRectangle (k, 2.0f);
+            g.setColour (ink.withAlpha (busy ? 0.35f : 0.55f));
+            g.drawRoundedRectangle (k.reduced (0.5f), 2.0f, 0.8f);
+            g.setColour (ink.withAlpha (busy ? 0.45f : 0.85f));
+            g.drawText (label, k, Justification::centred);
+            keysX -= 6.0f;
+        }
+    String st = "ARA  " + String::fromUTF8 ("\xc2\xb7  ") + (view.playhead >= 0.0 ? clockText (view.playhead) + " / " : String()) + clockText (view.length);
+    if (view.status.isNotEmpty()) st << String::fromUTF8 ("  \xc2\xb7  ") << view.status;
+    else if (view.progress >= 0.0f) st << String::fromUTF8 ("  \xc2\xb7  ") << "HEARING THE WORDS " << roundToInt (view.progress * 100.0f) << "%";
+    else if (! view.words.empty()) st << String::fromUTF8 ("  \xc2\xb7  ") << (int) view.words.size() << " WORDS";
+    else st << String::fromUTF8 ("  \xc2\xb7  ") << "WORDS: TRANSCRIPTION COMES NEXT";
+    g.setColour (ink.withAlpha (0.75f));
+    g.drawText (st, Rectangle<float> (x0 + w * 0.3f, r.getY() + 6.0f, keysX - 8.0f - (x0 + w * 0.3f), 14.0f), Justification::centredRight);
     g.setColour (ink.withAlpha (0.3f));
     g.fillRect (x0, r.getY() + 23.0f, w, 0.8f);
+    if (view.progress >= 0.0f)   // how far the listening has come, along the header's rule
+    {
+        g.setColour (Colour (0xffc4561a).withAlpha (0.8f));
+        g.fillRect (x0, r.getY() + 22.4f, w * jlimit (0.0f, 1.0f, view.progress), 2.0f);
+    }
 
     const double span = 10.0, len = jmax (0.01, view.length);
     double t0 = 0.0;
-    if (view.playhead >= 0.0) t0 = jlimit (0.0, jmax (0.0, len - span), view.playhead - span * 0.3);
+    if (scrollT0 >= 0.0 && ! view.playing) t0 = scrollT0;   // scrolled by hand while the song is stopped
+    else if (view.playhead >= 0.0) t0 = view.playhead - span * 0.3;
+    t0 = jlimit (0.0, jmax (0.0, len - span), t0);
+    shownT0 = t0; shownSpan = span; shownX0 = x0; shownW = w;
+    hits.clear();
+    if (lyricsPage != nullptr) return;   // the lyrics page covers the rest
     auto xAt = [&] (double t) { return x0 + (float) ((t - t0) / span) * w; };
-    const float cy = r.getCentreY() + 8.0f, maxA = (r.getHeight() - 40.0f) * 0.45f;
+    const float wordsH = hasWords ? 30.0f : 0.0f;
+    const float cy = r.getCentreY() + 8.0f + wordsH * 0.5f, maxA = (r.getHeight() - 40.0f - wordsH) * 0.45f;
+    if (hasWords)
+    {
+        // the words, each over where it is sung; selected ones like selected text; one being retyped as a field;
+        // a word the listening was unsure of gets a dotted underline, to check
+        const float wy = r.getY() + 30.0f, wh = 22.0f;
+        const auto f = KintsugiFonts::serif (15.0f, false);
+        float lastRight = -1.0e9f;
+        wordRow = Rectangle<float> (x0, wy - 4.0f, w, wh + 8.0f);
+        int index = -1;
+        g.saveState();
+        g.reduceClipRegion (Rectangle<float> (x0, wy - 4.0f, w, r.getBottom() - wy).toNearestInt());
+        for (auto& wd : view.words)
+        {
+            ++index;
+            const float a = xAt (wd.t0), b = xAt (wd.t1);
+            if (b < x0 - 60.0f || a > x0 + w + 60.0f) continue;
+            wd.editing = wd.id >= 0 && wd.id == editingId;
+            const String text = wd.editing ? wd.text + "|" : wd.text;
+            auto box = Rectangle<float> (jmax (GlyphArrangement::getStringWidth (f, wd.text) + 10.0f, b - a), wh).withCentre ({ (a + b) * 0.5f, wy + wh * 0.5f });
+            if (box.getX() < lastRight + 4.0f) box.setX (lastRight + 4.0f);
+            lastRight = box.getRight();
+            hits.push_back ({ box, index });
+            if (wd.selected)
+            {
+                g.setColour (Colour (0xffffb347).withAlpha (0.55f));
+                g.fillRoundedRectangle (box, 2.5f);
+                g.setColour (Colour (0xffc4561a).withAlpha (0.8f));
+                g.drawRoundedRectangle (box, 2.5f, 0.9f);
+            }
+            if (wd.editing)
+            {
+                g.setColour (Colour (0xfffffaea));
+                g.fillRoundedRectangle (box.expanded (3.0f, 1.0f), 2.0f);
+                g.setColour (ink.withAlpha (0.8f));
+                g.drawRoundedRectangle (box.expanded (3.0f, 1.0f), 2.0f, 1.0f);
+            }
+            g.setFont (f);
+            g.setColour (ink.withAlpha (wd.editing ? 1.0f : 0.92f));
+            if (wd.editing)
+            {
+                g.drawText (wd.text, box, Justification::centred);
+                const float tx = box.getCentreX() + GlyphArrangement::getStringWidth (f, wd.text) * 0.5f + 1.5f;
+                g.setColour (Colour (0xffc4561a));
+                g.fillRect (tx, box.getY() + 4.0f, 1.2f, box.getHeight() - 8.0f);
+            }
+            else
+                g.drawText (text, box, Justification::centred);
+            if (wd.confidence < 0.6f && ! wd.editing)
+            {
+                g.setColour (Colour (0xffc4561a).withAlpha (0.85f));
+                const float tw = GlyphArrangement::getStringWidth (f, wd.text);
+                for (float x = box.getCentreX() - tw * 0.5f; x < box.getCentreX() + tw * 0.5f; x += 3.0f)
+                    g.fillEllipse (x, box.getBottom() - 2.5f, 1.4f, 1.4f);
+            }
+            // the word's span on the waveform: faint ticks where it starts and ends
+            g.setColour (ink.withAlpha (wd.selected ? 0.35f : 0.12f));
+            g.drawLine (a, cy - maxA - 2.0f, a, cy + maxA + 2.0f, 0.6f);
+            if (wd.selected) { g.setColour (Colour (0xffffb347).withAlpha (0.18f)); g.fillRect (a, cy - maxA - 2.0f, b - a, 2 * maxA + 4.0f); }
+        }
+        g.restoreState();
+    }
+    waveArea = Rectangle<float> (x0, cy - maxA - 4.0f, w, 2.0f * maxA + 8.0f);
     if (view.peaks.empty())
     {
         g.setColour (ink.withAlpha (0.6f));
@@ -2187,6 +2283,237 @@ void WordsWindow::paintLive (juce::Graphics& g)
         g.fillPath (tri);
     }
     ignoreUnused (oxblood);
+}
+
+// the words, by hand: tap a word (shift: up to it), drag across words, double-click to correct one, Delete removes the
+// selected ones; tap the waveform to move the song there; scroll while the song is stopped
+void WordsWindow::setView (WordsView v)
+{
+    live = v.ara;
+    view = std::move (v);
+    if (wordField != nullptr && editingId >= 0)   // the word being corrected moves with the window
+    {
+        for (auto& h : hits)
+            if (h.index < (int) view.words.size() && view.words[(size_t) h.index].id == editingId)
+                wordField->setBounds (h.box.expanded (6.0f, 2.0f).toNearestInt());
+    }
+    repaint();
+}
+
+void WordsWindow::resized()
+{
+    if (lyricsPage != nullptr)
+    {
+        auto b = getLocalBounds().reduced (10, 0).withTrimmedTop (28).withTrimmedBottom (8);
+        auto keys = b.removeFromRight (124);
+        lyricsPage->setBounds (b.withTrimmedRight (8));
+        placeKey->setBounds (keys.removeFromTop (26));
+        keys.removeFromTop (6);
+        cancelKey->setBounds (keys.removeFromTop (22));
+    }
+}
+
+int WordsWindow::hitAt (juce::Point<float> p, bool nearest) const
+{
+    int best = -1; float bestD = 1.0e9f;
+    for (auto& h : hits)
+    {
+        if (h.box.expanded (2.0f, 4.0f).contains (p)) return h.index;
+        const float d = std::abs (h.box.getCentreX() - p.x);
+        if (nearest && d < bestD) { bestD = d; best = h.index; }
+    }
+    return best;
+}
+
+void WordsWindow::selectRange (int a, int b)
+{
+    if (a > b) std::swap (a, b);
+    for (int i = 0; i < (int) view.words.size(); ++i) view.words[(size_t) i].selected = a >= 0 && i >= a && i <= b;
+    repaint();
+    if (onAction)
+    {
+        WordsAction act; act.kind = WordsAction::select;
+        if (a >= 0 && b < (int) view.words.size()) { act.first = view.words[(size_t) a].id; act.last = view.words[(size_t) b].id; }
+        onAction (act);
+    }
+}
+
+void WordsWindow::mouseDown (const juce::MouseEvent& e)
+{
+    if (! live) return;
+    if (wordField != nullptr) endEdit (true);
+    grabKeyboardFocus();
+    const auto p = e.position;
+    dragged = false; anchor = -1;
+    if (transcribeKey.contains (p)) { if (onAction) { WordsAction a; a.kind = WordsAction::transcribe; onAction (a); } return; }
+    if (lyricsKey.contains (p)) { openLyrics(); return; }
+    if (wordRow.contains (p))
+    {
+        const int i = hitAt (p, false);
+        if (i < 0) { selectRange (-1, -1); return; }
+        int from = i;
+        if (e.mods.isShiftDown())
+            for (int k = 0; k < (int) view.words.size(); ++k) if (view.words[(size_t) k].selected) { from = k; break; }
+        anchor = from;
+        selectRange (from, i);
+        return;
+    }
+    if (waveArea.contains (p) && onAction)
+    {
+        WordsAction a; a.kind = WordsAction::locate;
+        a.time = juce::jlimit (0.0, juce::jmax (0.0, view.length), shownT0 + (p.x - shownX0) / shownW * shownSpan);
+        onAction (a);
+    }
+}
+
+void WordsWindow::mouseDrag (const juce::MouseEvent& e)
+{
+    if (! live || anchor < 0) return;
+    const int i = hitAt (e.position, true);
+    if (i >= 0) { dragged = true; selectRange (anchor, i); }
+}
+
+void WordsWindow::mouseUp (const juce::MouseEvent&) { anchor = -1; }
+
+void WordsWindow::mouseDoubleClick (const juce::MouseEvent& e)
+{
+    if (! live || ! wordRow.contains (e.position)) return;
+    const int i = hitAt (e.position, false);
+    if (i >= 0) beginEdit (i);
+}
+
+void WordsWindow::mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& w)
+{
+    if (! live || view.playing) { Component::mouseWheelMove (e, w); return; }
+    const float d = std::abs (w.deltaX) > std::abs (w.deltaY) ? -w.deltaX : -w.deltaY;
+    scrollT0 = juce::jlimit (0.0, juce::jmax (0.0, view.length - shownSpan), shownT0 + d * shownSpan * 0.6);
+    repaint();
+}
+
+bool WordsWindow::keyPressed (const juce::KeyPress& k)
+{
+    if (! live) return false;
+    if (k == juce::KeyPress::deleteKey || k == juce::KeyPress::backspaceKey)
+    {
+        int a = -1, b = -1;
+        for (int i = 0; i < (int) view.words.size(); ++i)
+            if (view.words[(size_t) i].selected) { if (a < 0) a = i; b = i; }
+        if (a >= 0 && onAction)
+        {
+            WordsAction act; act.kind = WordsAction::remove; act.first = view.words[(size_t) a].id; act.last = view.words[(size_t) b].id;
+            onAction (act);
+        }
+        return true;
+    }
+    if (k == juce::KeyPress::returnKey)
+    {
+        for (int i = 0; i < (int) view.words.size(); ++i) if (view.words[(size_t) i].selected) { beginEdit (i); return true; }
+    }
+    return false;
+}
+
+static void styleField (juce::TextEditor& t, float size)
+{
+    t.setFont (KintsugiFonts::serif (size, false));
+    t.setColour (juce::TextEditor::backgroundColourId, juce::Colour (0xfffffaea));
+    t.setColour (juce::TextEditor::textColourId, juce::Colour (0xff2a2210));
+    t.setColour (juce::TextEditor::outlineColourId, juce::Colour (0xff2a2210).withAlpha (0.7f));
+    t.setColour (juce::TextEditor::focusedOutlineColourId, juce::Colour (0xffc4561a));
+    t.setColour (juce::TextEditor::highlightColourId, juce::Colour (0xffffb347).withAlpha (0.6f));
+    t.setColour (juce::CaretComponent::caretColourId, juce::Colour (0xffc4561a));
+}
+
+void WordsWindow::beginEdit (int index)
+{
+    if (index < 0 || index >= (int) view.words.size()) return;
+    juce::Rectangle<float> box;
+    for (auto& h : hits) if (h.index == index) box = h.box;
+    if (box.isEmpty()) return;
+    editingId = view.words[(size_t) index].id;
+    wordField = std::make_unique<juce::TextEditor>();
+    styleField (*wordField, 15.0f);
+    wordField->setJustification (juce::Justification::centred);
+    wordField->setText (view.words[(size_t) index].text, false);
+    wordField->setBounds (box.expanded (6.0f, 2.0f).toNearestInt());
+    wordField->onReturnKey = [this] { juce::MessageManager::callAsync ([sp = juce::Component::SafePointer<WordsWindow> (this)] { if (sp != nullptr) sp->endEdit (true); }); };
+    wordField->onEscapeKey = [this] { juce::MessageManager::callAsync ([sp = juce::Component::SafePointer<WordsWindow> (this)] { if (sp != nullptr) sp->endEdit (false); }); };
+    wordField->onFocusLost = [this] { juce::MessageManager::callAsync ([sp = juce::Component::SafePointer<WordsWindow> (this)] { if (sp != nullptr) sp->endEdit (true); }); };
+    addAndMakeVisible (*wordField);
+    wordField->grabKeyboardFocus();
+    wordField->selectAll();
+    repaint();
+}
+
+void WordsWindow::endEdit (bool keep)
+{
+    if (wordField == nullptr) return;
+    const auto text = wordField->getText().trim();
+    const int id = editingId;
+    editingId = -1;
+    auto gone = std::move (wordField);   // (deleted at the end of this call, after its callbacks)
+    removeChildComponent (gone.get());
+    juce::String old;
+    for (auto& w : view.words) if (w.id == id) old = w.text;
+    if (keep && id >= 0 && text != old && onAction)
+    {
+        WordsAction a; a.kind = WordsAction::edit; a.first = id; a.text = text;
+        onAction (a);
+    }
+    repaint();
+}
+
+juce::Font WordsWindow::KeyLook::getTextButtonFont (juce::TextButton&, int)
+{
+    return KintsugiFonts::serif (10.0f, false).withExtraKerningFactor (0.12f);
+}
+
+void WordsWindow::KeyLook::drawButtonBackground (juce::Graphics& g, juce::Button& b, const juce::Colour& c, bool over, bool down)
+{
+    const auto r = b.getLocalBounds().toFloat().reduced (0.5f);
+    g.setColour (c.brighter (over ? 0.08f : 0.0f).darker (down ? 0.12f : 0.0f));
+    g.fillRoundedRectangle (r, 2.0f);
+    g.setColour (juce::Colour (0xff2a2210).withAlpha (0.55f));
+    g.drawRoundedRectangle (r, 2.0f, 0.8f);
+}
+
+void WordsWindow::openLyrics()
+{
+    if (lyricsPage != nullptr) return;
+    lyricsPage = std::make_unique<juce::TextEditor>();
+    styleField (*lyricsPage, 14.0f);
+    lyricsPage->setMultiLine (true, true);
+    lyricsPage->setReturnKeyStartsNewLine (true);
+    lyricsPage->setScrollbarsShown (true);
+    lyricsPage->setTextToShowWhenEmpty ("Paste the lyrics as written, the whole song. Duality places each word where it is sung.",
+                                        juce::Colour (0xff2a2210).withAlpha (0.45f));
+    placeKey = std::make_unique<juce::TextButton> ("PLACE THE WORDS");
+    cancelKey = std::make_unique<juce::TextButton> ("CANCEL");
+    for (auto* b : { placeKey.get(), cancelKey.get() })
+    {
+        b->setLookAndFeel (&keyLook);
+        b->setColour (juce::TextButton::buttonColourId, juce::Colour (0xffe8dcb4));
+        b->setColour (juce::TextButton::textColourOffId, juce::Colour (0xff2a2210));
+        addAndMakeVisible (*b);
+    }
+    placeKey->setColour (juce::TextButton::buttonColourId, juce::Colour (0xffffb347));
+    placeKey->onClick = [this] { juce::MessageManager::callAsync ([sp = juce::Component::SafePointer<WordsWindow> (this)] { if (sp != nullptr) sp->closeLyrics (true); }); };
+    cancelKey->onClick = [this] { juce::MessageManager::callAsync ([sp = juce::Component::SafePointer<WordsWindow> (this)] { if (sp != nullptr) sp->closeLyrics (false); }); };
+    addAndMakeVisible (*lyricsPage);
+    resized();
+    lyricsPage->grabKeyboardFocus();
+}
+
+void WordsWindow::closeLyrics (bool place)
+{
+    if (lyricsPage == nullptr) return;
+    const auto text = lyricsPage->getText();
+    lyricsPage.reset(); placeKey.reset(); cancelKey.reset();
+    if (place && text.trim().isNotEmpty() && onAction)
+    {
+        WordsAction a; a.kind = WordsAction::lyrics; a.text = text;
+        onAction (a);
+    }
+    repaint();
 }
 
 void WordsWindow::paint (juce::Graphics& g)
@@ -3294,18 +3621,80 @@ ArtifactsEditor::ArtifactsEditor (ArtifactsProcessor& p)
         irWindow.setVisible (false);
         plateArea.addAndMakeVisible (wordsWindow);
         plateArea.addAndMakeVisible (applyKeys);
-        wordsWindow.setTooltip ("The vocal's words: select them like text, then apply an effect");
-        if (juce::SystemStats::getEnvironmentVariable ("DUALITY_LIVE_PREVIEW", "") == "1")   // (preview of the live ARA view, for the renders)
+        wordsWindow.setTooltip ("The vocal's words: tap or drag across words to select them, double-click one to correct it; tap the waveform to move the song there");
+        wordsWindow.setWantsKeyboardFocus (true);
+        wordsWindow.onAction = [this] (const WordsAction& a)
         {
-            WordsView v; v.ara = true; v.track = "Vox (R)"; v.clip = "Vox (R)_03"; v.length = 192.0; v.playhead = 63.4; v.playing = true;
+            proc.wordsAction (a);
+            auto v = proc.getWordsView();   // at once, not at the next refresh
+            if (v.ara) wordsWindow.setView (std::move (v));
+        };
+        const auto livePreview = juce::SystemStats::getEnvironmentVariable ("DUALITY_LIVE_PREVIEW", "");
+        if (livePreview.isNotEmpty())   // (preview of the live ARA view, for the renders: 1, words, hearing)
+        {
+            WordsView v; v.ara = true; v.track = "Vox (R)"; v.clip = "Vox (R)_03"; v.length = 192.0; v.playhead = livePreview == "1" ? 63.4 : 66.0; v.playing = true;
             juce::Random rng (4);
+            if (livePreview != "1")
+            {
+                // a sung verse: a line every four seconds, each word as long as its syllables
+                const char* lines[] = { "the lamps are low along the shore", "and I keep falling into the quiet",
+                                        "hold on to me I'm almost home", "the tide has taken all I wore" };
+                for (int ln = 0; ln < 48; ++ln)
+                {
+                    auto ws = juce::StringArray::fromTokens (lines[ln % 4], " ", "");
+                    double total = 0; for (auto& x : ws) total += 0.6 + x.length();
+                    double t = ln * 4.0 + 0.15;
+                    for (auto& x : ws)
+                    {
+                        const double d = 3.0 * (0.6 + x.length()) / total;
+                        v.words.push_back ({ x, t, t + d * 0.86 });
+                        t += d;
+                    }
+                }
+                for (auto& wd : v.words)
+                {
+                    if (wd.t0 > 68.0 && wd.t0 < 72.0 && wd.text == "quiet") { wd.text = "quite"; wd.confidence = 0.4f; }
+                    if (wd.t0 > 68.0 && wd.t0 < 72.0 && (wd.text == "falling" || wd.text == "into")) wd.selected = true;
+                    if (wd.t0 > 64.0 && wd.t0 < 68.0 && wd.text == "shore") { wd.text = "shor"; wd.editing = true; }
+                }
+                if (livePreview == "hearing")
+                {
+                    v.progress = 0.36f;
+                    v.words.erase (std::remove_if (v.words.begin(), v.words.end(), [] (auto& wd) { return wd.t1 > 69.6; }), v.words.end());
+                    for (auto& wd : v.words) { wd.selected = wd.editing = false; if (wd.text == "shor") wd.text = "shore"; }
+                }
+            }
             for (int i = 0; i < 19200; ++i)
             {
-                const double t = i * 0.01, phrase = std::fmod (t, 4.0);
-                const float env = phrase < 3.2 ? (float) (0.35 + 0.35 * std::sin (t * 9.0) * std::sin (t * 2.3)) : 0.01f;
+                const double t = i * 0.01;
+                float env = 0.01f;
+                if (v.words.empty() && livePreview == "1")
+                {
+                    const double phrase = std::fmod (t, 4.0);
+                    env = phrase < 3.2 ? (float) (0.35 + 0.35 * std::sin (t * 9.0) * std::sin (t * 2.3)) : 0.01f;
+                }
+                else
+                {
+                    const char* lines2[] = { "x" }; juce::ignoreUnused (lines2);
+                    const double phrase = std::fmod (t, 4.0);
+                    if (phrase > 0.15 && phrase < 3.15)
+                    {
+                        const double u = std::fmod (phrase * 3.1, 1.0);   // syllables
+                        env = (float) ((0.45 + 0.3 * std::sin (t * 2.3)) * (0.35 + 0.65 * std::sin (juce::MathConstants<double>::pi * u)));
+                    }
+                }
                 v.peaks.push_back (juce::jlimit (0.0f, 1.0f, std::abs (env) * (0.6f + 0.4f * rng.nextFloat())));
             }
-            wordsWindow.setView (v);
+            if (livePreview != "1")   // the waveform's dips between words, so it lines up with them
+                for (auto& wd : v.words)
+                    for (int i = (int) (wd.t1 * 100); i < juce::jmin ((int) v.peaks.size(), (int) (wd.t1 * 100) + 6); ++i) v.peaks[(size_t) i] *= 0.15f;
+            if (livePreview == "lyrics")
+            {
+                for (auto& wd : v.words) wd.editing = false;
+                wordsWindow.setView (v);
+                wordsWindow.openLyrics();
+            }
+            else wordsWindow.setView (v);
             previewLive = true;
         }
         iron->name = "Perspective"; iron->stepLabels = { "OBJECT", "KENSHO", "SUBJECT" };

@@ -47,6 +47,33 @@ if(NOT DEFINED ARA_SDK_DIR)
 endif()
 juce_set_ara_sdk_path(${ARA_SDK_DIR})
 
+# whisper.cpp (MIT): Duality hears the vocal's words on the computer itself. A local copy with -DWHISPER_DIR=...
+# Built as static libraries into Duality only; no OpenMP (a plug-in must not bring its own thread runtime),
+# on a Mac with Metal (Apple Silicon) and Accelerate, in one universal binary as whisper.cpp's own Mac framework is.
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+foreach(opt WHISPER_BUILD_EXAMPLES WHISPER_BUILD_TESTS WHISPER_BUILD_SERVER WHISPER_ALL_WARNINGS GGML_ALL_WARNINGS
+            GGML_OPENMP GGML_NATIVE GGML_CCACHE WHISPER_CURL WHISPER_SDL2 GGML_BUILD_TESTS GGML_BUILD_EXAMPLES)
+    set(${opt} OFF CACHE BOOL "" FORCE)
+endforeach()
+if(APPLE)
+    set(GGML_METAL ON CACHE BOOL "" FORCE)
+    set(GGML_METAL_EMBED_LIBRARY ON CACHE BOOL "" FORCE)
+    set(GGML_BLAS ON CACHE BOOL "" FORCE)
+endif()
+if(DEFINED WHISPER_DIR)
+    add_subdirectory(${WHISPER_DIR} whisper EXCLUDE_FROM_ALL)
+else()
+    include(FetchContent)
+    FetchContent_Declare(
+        whisper
+        GIT_REPOSITORY https://github.com/ggml-org/whisper.cpp.git
+        GIT_TAG v1.9.6
+        GIT_SHALLOW TRUE
+        EXCLUDE_FROM_ALL)
+    FetchContent_MakeAvailable(whisper)
+endif()
+
 # Embedded fonts, shared by every plugin
 juce_add_binary_data(ArtifactsAssets SOURCES
     Resources/OldStandard-Regular.ttf
