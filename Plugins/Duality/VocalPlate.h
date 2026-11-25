@@ -100,7 +100,7 @@ public:
                     air[s] += (1.0f - airCoef) * (damp[s] - air[s]);  // and the very top faster still, as on a steel plate:
                                                                        // the hiss of an S must not ring on in the tail
                     low[s] += lowLeak * (air[s] - low[s]);
-                    d = air[s] - 0.22f * low[s];                    // and the lows a little too: a plate is lean underneath
+                    d = air[s] - 0.08f * low[s];                    // and the lows a little too: a plate is lean underneath
                 }
                 d *= dk[s];
                 d = decayAP[s].allpass (d, 0.50f);

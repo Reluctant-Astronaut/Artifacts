@@ -49,7 +49,7 @@ AudioProcessorValueTreeState::ParameterLayout DualityProcessor::createLayout()
     p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "pdamp", 2 }, "Plate Damping", unit, 0.35f, pct));
     p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "ppre", 2 }, "Plate Pre-delay", skewed (0.0f, 250.0f, 40.0f), 20.0f,
         AudioParameterFloatAttributes().withLabel ("ms").withStringFromValueFunction ([] (float v, int) { return String (roundToInt (v)) + " ms"; })));
-    p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "plowcut", 2 }, "Plate Low Cut", skewed (20.0f, 1000.0f, 150.0f), 100.0f,
+    p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "plowcut", 2 }, "Plate Low Cut", skewed (20.0f, 1000.0f, 150.0f), 60.0f,
         AudioParameterFloatAttributes().withLabel ("Hz").withStringFromValueFunction (hzText)));
     p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "phighcut", 2 }, "Plate High Cut", skewed (2000.0f, 20000.0f, 8000.0f), 12000.0f,
         AudioParameterFloatAttributes().withLabel ("Hz").withStringFromValueFunction (hzText)));
