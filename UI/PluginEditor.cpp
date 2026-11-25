@@ -2435,9 +2435,9 @@ void WordsWindow::beginEdit (int index)
     wordField->setJustification (juce::Justification::centred);
     wordField->setText (view.words[(size_t) index].text, false);
     wordField->setBounds (box.expanded (6.0f, 2.0f).toNearestInt());
-    wordField->onReturnKey = [this] { juce::MessageManager::callAsync ([sp = juce::Component::SafePointer<WordsWindow> (this)] { if (sp != nullptr) sp->endEdit (true); }); };
-    wordField->onEscapeKey = [this] { juce::MessageManager::callAsync ([sp = juce::Component::SafePointer<WordsWindow> (this)] { if (sp != nullptr) sp->endEdit (false); }); };
-    wordField->onFocusLost = [this] { juce::MessageManager::callAsync ([sp = juce::Component::SafePointer<WordsWindow> (this)] { if (sp != nullptr) sp->endEdit (true); }); };
+    wordField->onReturnKey = [sp = juce::Component::SafePointer<WordsWindow> (this)] { juce::MessageManager::callAsync ([sp] { if (sp != nullptr) sp->endEdit (true); }); };
+    wordField->onEscapeKey = [sp = juce::Component::SafePointer<WordsWindow> (this)] { juce::MessageManager::callAsync ([sp] { if (sp != nullptr) sp->endEdit (false); }); };
+    wordField->onFocusLost = [sp = juce::Component::SafePointer<WordsWindow> (this)] { juce::MessageManager::callAsync ([sp] { if (sp != nullptr) sp->endEdit (true); }); };
     addAndMakeVisible (*wordField);
     wordField->grabKeyboardFocus();
     wordField->selectAll();
@@ -2496,8 +2496,8 @@ void WordsWindow::openLyrics()
         addAndMakeVisible (*b);
     }
     placeKey->setColour (juce::TextButton::buttonColourId, juce::Colour (0xffffb347));
-    placeKey->onClick = [this] { juce::MessageManager::callAsync ([sp = juce::Component::SafePointer<WordsWindow> (this)] { if (sp != nullptr) sp->closeLyrics (true); }); };
-    cancelKey->onClick = [this] { juce::MessageManager::callAsync ([sp = juce::Component::SafePointer<WordsWindow> (this)] { if (sp != nullptr) sp->closeLyrics (false); }); };
+    placeKey->onClick = [sp = juce::Component::SafePointer<WordsWindow> (this)] { juce::MessageManager::callAsync ([sp] { if (sp != nullptr) sp->closeLyrics (true); }); };
+    cancelKey->onClick = [sp = juce::Component::SafePointer<WordsWindow> (this)] { juce::MessageManager::callAsync ([sp] { if (sp != nullptr) sp->closeLyrics (false); }); };
     addAndMakeVisible (*lyricsPage);
     resized();
     lyricsPage->grabKeyboardFocus();
