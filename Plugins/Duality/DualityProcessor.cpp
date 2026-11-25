@@ -289,9 +289,12 @@ void DualityProcessor::processStereo (AudioBuffer<float>& buffer)
         const float w = sWidth.getNextValue();   // the width of the plate (mid / side)
         const float m = 0.5f * (wl + wr), s = 0.5f * (wl - wr) * w;
         wl = m + s; wr = m - s;
+        // Mix: the balance of plate to voice is mix : (1 - mix) as before, but the louder of the two stays at full level,
+        // so the voice keeps its level up to the middle (Duality is an insert on the vocal, or an ARA extension on it)
         const float mix = sMix.getNextValue(), og = sOut.getNextValue();
-        oL[i] = (inL[i] * (1.0f - mix) + wl * mix) * og;
-        oR[i] = (inR[i] * (1.0f - mix) + wr * mix) * og;
+        const float dryG = mix <= 0.5f ? 1.0f : (1.0f - mix) / mix, wetG = mix <= 0.5f ? mix / (1.0f - mix) : 1.0f;
+        oL[i] = (inL[i] * dryG + wl * wetG) * og;
+        oR[i] = (inR[i] * dryG + wr * wetG) * og;
         sumL += oL[i] * oL[i]; sumR += oR[i] * oR[i];
         inSumL += inL[i] * inL[i]; inSumR += inR[i] * inR[i];
         peak = std::max ({ peak, std::abs (oL[i]), std::abs (oR[i]) });
