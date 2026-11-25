@@ -31,6 +31,22 @@ else()
     FetchContent_MakeAvailable(JUCE)
 endif()
 
+# The ARA SDK (Celemony, Apache 2.0): Duality is an ARA extension in Cubase and other ARA hosts.
+# A local copy with -DARA_SDK_DIR=..., otherwise fetched (headers and library sources only; its examples are not built)
+if(NOT DEFINED ARA_SDK_DIR)
+    include(FetchContent)
+    FetchContent_Declare(
+        ara_sdk
+        GIT_REPOSITORY https://github.com/Celemony/ARA_SDK.git
+        GIT_TAG releases/2.2.0
+        GIT_SHALLOW TRUE
+        GIT_SUBMODULES ARA_API ARA_Library
+        SOURCE_SUBDIR do-not-add)
+    FetchContent_MakeAvailable(ara_sdk)
+    set(ARA_SDK_DIR ${ara_sdk_SOURCE_DIR})
+endif()
+juce_set_ara_sdk_path(${ARA_SDK_DIR})
+
 # Embedded fonts, shared by every plugin
 juce_add_binary_data(ArtifactsAssets SOURCES
     Resources/OldStandard-Regular.ttf
@@ -42,6 +58,10 @@ set(ARTIFACTS_INCLUDES ${CMAKE_CURRENT_SOURCE_DIR}/Shared ${CMAKE_CURRENT_SOURCE
 # One plugin of the suite.  variant: 1 Kintsugi, 2 Console RA-1, 3 Duality, 4 Anemoia, 5 Equanimity
 function(artifacts_plugin TARGET PRODUCT CODE VARIANT)
     string(TOLOWER ${TARGET} TARGET_LC)
+    set(ARA_ARGS "")
+    if("${TARGET}" STREQUAL "Duality")   # Duality only: an ARA effect (it plays the vocal event itself, to know its words)
+        set(ARA_ARGS IS_ARA_EFFECT TRUE)
+    endif()
     if(APPLE)
         set(FORMATS VST3 AU)
     else()
@@ -49,6 +69,7 @@ function(artifacts_plugin TARGET PRODUCT CODE VARIANT)
     endif()
     juce_add_plugin(${TARGET}
         COMPANY_NAME "Reluctant Astronaut"
+        COMPANY_WEBSITE "https://github.com/Reluctant-Astronaut"
         BUNDLE_ID "com.reluctantastronaut.artifacts.${TARGET_LC}"
         PLUGIN_MANUFACTURER_CODE Rast
         PLUGIN_CODE ${CODE}
@@ -59,6 +80,7 @@ function(artifacts_plugin TARGET PRODUCT CODE VARIANT)
         NEEDS_MIDI_OUTPUT FALSE
         EDITOR_WANTS_KEYBOARD_FOCUS FALSE
         COPY_PLUGIN_AFTER_BUILD FALSE
+        ${ARA_ARGS}
         VST3_CATEGORIES Fx ${ARGN})
     target_sources(${TARGET} PRIVATE UI/PluginEditor.cpp)
     target_include_directories(${TARGET} PRIVATE ${ARTIFACTS_INCLUDES})

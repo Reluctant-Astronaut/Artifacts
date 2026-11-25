@@ -120,6 +120,12 @@ public:
     juce::String source { juce::String::fromUTF8 ("LEAD VOX  \xc2\xb7  TAKE 3") }, status { juce::String::fromUTF8 ("DEMO  \xc2\xb7  THE WORDS ARRIVE WITH ARA") };
     WordsWindow();
     void paint (juce::Graphics&) override;
+    // live: Duality is an ARA extension on a vocal event; the window shows that event's waveform, following the song
+    bool live = false;
+    WordsView view;
+    void setView (WordsView v) { live = v.ara; view = std::move (v); repaint(); }
+private:
+    void paintLive (juce::Graphics&);
 };
 
 // Duality: the Apply plate, six keys that put an effect on the selected words
@@ -253,6 +259,8 @@ private:
     IRWindow irWindow;
     WordsWindow wordsWindow;
     bool throwPage = false;   // Duality mock-up: which Words page is shown
+    int wordsTick = 0;
+    bool previewLive = false;
     ApplyKeys applyKeys;
     DrumWindow dTime { juce::StringArray { "375 MS" } }, dDiv { juce::StringArray { "1/8" } }, dFeel { juce::StringArray { "DOTTED" } },
                dPat { juce::StringArray { "SCATTER" } }, dPitch { juce::StringArray { "+7 ST" } };

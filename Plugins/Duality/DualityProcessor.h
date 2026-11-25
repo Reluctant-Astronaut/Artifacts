@@ -2,6 +2,8 @@
 
 #include "ArtifactsProcessor.h"
 #include "VocalPlate.h"
+#include "DualityARA.h"
+#include <mutex>
 
 // Duality: the vocal plate, and the words.
 //   Object  - the plate on the whole vocal (the Plate section)
@@ -9,13 +11,21 @@
 //   Kensho  - both: the plate on everything, and the words' effects on top
 // This build: the plate. The Words section (with ARA and the transcription) follows.
 class DualityProcessor : public ArtifactsProcessor
+#if JucePlugin_Enable_ARA
+                       , public juce::AudioProcessorARAExtension   // Duality as an extension on the vocal event (ARA)
+#endif
 {
 public:
     DualityProcessor();
     ~DualityProcessor() override = default;
 
     void prepareToPlay (double sampleRate, int samplesPerBlock) override;
-    void releaseResources() override {}
+    void releaseResources() override
+    {
+       #if JucePlugin_Enable_ARA
+        releaseResourcesForARA();
+       #endif
+    }
     bool isBusesLayoutSupported (const BusesLayout& layouts) const override;
     void processBlock (juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
     using AudioProcessor::processBlock;
@@ -39,9 +49,11 @@ public:
     void setStateInformation (const void* data, int sizeInBytes) override;
 
     static juce::AudioProcessorValueTreeState::ParameterLayout createLayout();
+    WordsView getWordsView() override;
 
 private:
     void updateFilters (float lowCut, float highCut);
+    void processStereo (juce::AudioBuffer<float>&);
 
     double sr = 48000.0;
     std::atomic<int> currentProgram { 0 };
@@ -72,10 +84,18 @@ private:
     // Duck: the plate steps back while the voice sings, and blooms in the gaps
     float duckEnv = 0.0f, duckGain = 1.0f; int duckHold = 0;
 
-    juce::AudioBuffer<float> dryBuf, wetBuf;
+    juce::AudioBuffer<float> dryBuf, wetBuf, monoBuf;
     std::vector<float> send;
     juce::SmoothedValue<float> sPre, sWidth, sMix, sOut, gPlate, sLow, sHigh;
     bool plateRunning = true;
+
+    // ARA: where the song is (seconds) and whether it plays, from the audio thread; the event's waveform, read in the background
+    std::atomic<double> araTime { -1.0 };
+    std::atomic<bool> araPlaying { false };
+    std::mutex peakMutex;
+    std::vector<float> peaks;
+    juce::String peakKey;   // which event (and which part of its audio) the peaks are of
+    juce::ThreadPool peakPool { 1 };   // (last: it is gone, its job finished, before the things the job uses)
 
     std::atomic<float> *pDecay, *pDamp, *pPre, *pLow, *pHigh, *pDuck, *pPersp, *pWidth, *pMix, *pOutput;
 

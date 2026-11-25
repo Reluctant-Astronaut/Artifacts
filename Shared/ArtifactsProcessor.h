@@ -11,6 +11,17 @@ struct IRInfo
     std::vector<float> peaks;   // a coarse envelope for the little waveform, 0..1
 };
 
+// What the Duality editor's Words window shows when Duality is an ARA extension on a vocal event
+struct WordsView
+{
+    bool ara = false;                 // bound to an event (otherwise the window shows its demo line)
+    juce::String track, clip;         // the track's and the event's names
+    std::vector<float> peaks;         // the event's waveform, one peak per 10 ms, 0..1 (empty while it is read)
+    double length = 0.0;              // seconds
+    double playhead = -1.0;           // seconds into the event (-1: not inside it)
+    bool playing = false;
+};
+
 // The common face of all four Artifacts plugins: the parameter tree, and the numbers the shared
 // editor reads (meters, gain reduction, lamps). Each plugin fills in what it has.
 class ArtifactsProcessor : public juce::AudioProcessor
@@ -36,6 +47,8 @@ public:
     virtual int irPresetCount() const { return 0; }
     virtual juce::String irPresetName (int) const { return {}; }
     virtual void loadIRPreset (int) {}
+    // Duality: the vocal event it is bound to (ARA), for the Words window (message thread)
+    virtual WordsView getWordsView() { return {}; }
 
     juce::AudioProcessorValueTreeState apvts;
 

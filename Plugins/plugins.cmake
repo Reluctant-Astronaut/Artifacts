@@ -14,7 +14,7 @@ endfunction()
 artifacts_add(Console  "Console RA-1" ArC1 2 "${STRIP_SOURCES}" Dynamics)
 artifacts_add(Kintsugi "Kintsugi"     ArK1 1 "${STRIP_SOURCES}" Distortion)
 
-set(DUALITY_SOURCES ${CMAKE_CURRENT_LIST_DIR}/Duality/DualityProcessor.cpp)
+set(DUALITY_SOURCES ${CMAKE_CURRENT_LIST_DIR}/Duality/DualityProcessor.cpp ${CMAKE_CURRENT_LIST_DIR}/Duality/DualityARA.cpp)
 artifacts_add(Duality "Duality" ArD1 3 "${DUALITY_SOURCES}" Reverb)
 
 set(ANEMOIA_SOURCES ${CMAKE_CURRENT_LIST_DIR}/Anemoia/AnemoiaProcessor.cpp)

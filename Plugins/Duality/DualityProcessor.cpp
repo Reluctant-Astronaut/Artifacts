@@ -82,7 +82,9 @@ DualityProcessor::DualityProcessor()
 bool DualityProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
 {
     const auto out = layouts.getMainOutputChannelSet(), in = layouts.getMainInputChannelSet();
-    return out == AudioChannelSet::stereo() && (in == AudioChannelSet::stereo() || in == AudioChannelSet::mono());
+    // stereo out (from mono or stereo), or mono in and out: a mono vocal track in Cubase, where Duality is often an ARA extension
+    return (out == AudioChannelSet::stereo() && (in == AudioChannelSet::stereo() || in == AudioChannelSet::mono()))
+        || (out == AudioChannelSet::mono() && in == AudioChannelSet::mono());
 }
 
 //==============================================================================
@@ -116,6 +118,9 @@ void DualityProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     updateFilters (pLow->load(), pHigh->load());
 
     dryBuf.setSize (2, samplesPerBlock); wetBuf.setSize (2, samplesPerBlock);
+   #if JucePlugin_Enable_ARA
+    prepareToPlayForARA (sampleRate, samplesPerBlock, getMainBusNumOutputChannels(), getProcessingPrecision());
+   #endif
     send.assign ((size_t) samplesPerBlock, 0.0f);
     setLatencySamples (0);
 }
@@ -135,10 +140,35 @@ void DualityProcessor::processBlock (AudioBuffer<float>& buffer, MidiBuffer&)
 {
     ScopedNoDenormals noDenormals;
     const int n = buffer.getNumSamples();
-    if (getTotalNumInputChannels() == 1 && buffer.getNumChannels() > 1)
-        buffer.copyFrom (1, 0, buffer, 0, 0, n);
-    if (buffer.getNumChannels() < 2 || n == 0)
+    if (n == 0 || buffer.getNumChannels() < 1) return;
+   #if JucePlugin_Enable_ARA
+    if (isBoundToARA())
+    {
+        // an extension on the vocal event: the vocal is Duality's own playback of the event, not the track's input
+        AudioPlayHead::PositionInfo pos;
+        if (auto* ph = getPlayHead()) if (auto p = ph->getPosition()) pos = *p;
+        processBlockForARA (buffer, isRealtime(), pos);
+        araTime.store (pos.getTimeInSeconds().orFallback (-1.0));
+        araPlaying.store (pos.getIsPlaying());
+    }
+   #endif
+    if (buffer.getNumChannels() == 1)
+    {
+        // mono in and out: the plate runs in stereo as always, and is folded back to one channel
+        if (monoBuf.getNumSamples() < n) monoBuf.setSize (2, n, false, false, true);
+        AudioBuffer<float> st (monoBuf.getArrayOfWritePointers(), 2, n);
+        st.copyFrom (0, 0, buffer, 0, 0, n); st.copyFrom (1, 0, buffer, 0, 0, n);
+        processStereo (st);
+        buffer.copyFrom (0, 0, st, 0, 0, n); buffer.addFrom (0, 0, st, 1, 0, n); buffer.applyGain (0, 0, n, 0.5f);
         return;
+    }
+    if (getTotalNumInputChannels() == 1) buffer.copyFrom (1, 0, buffer, 0, 0, n);
+    processStereo (buffer);
+}
+
+void DualityProcessor::processStereo (AudioBuffer<float>& buffer)
+{
+    const int n = buffer.getNumSamples();
     if (n > dryBuf.getNumSamples()) { dryBuf.setSize (2, n, false, false, true); wetBuf.setSize (2, n, false, false, true); send.resize ((size_t) n); }
 
     const int persp = roundToInt (pPersp->load());
@@ -279,3 +309,69 @@ void DualityProcessor::setStateInformation (const void* data, int sizeInBytes)
 
 AudioProcessorEditor* DualityProcessor::createEditor() { return new ArtifactsEditor (*this); }
 AudioProcessor* JUCE_CALLTYPE createPluginFilter() { return new DualityProcessor(); }
+
+//==============================================================================
+// The Words window's view of the vocal event (ARA): its names, its waveform (read once, in the background), where the song is.
+WordsView DualityProcessor::getWordsView()
+{
+    WordsView v;
+   #if JucePlugin_Enable_ARA
+    if (! isBoundToARA()) return v;
+    v.ara = true;
+    auto* renderer = getPlaybackRenderer<DualityARA::PlaybackRenderer>();
+    if (renderer == nullptr || renderer->getPlaybackRegions().empty()) return v;
+    auto* region = renderer->getPlaybackRegions().front();
+    auto* modification = region->getAudioModification();
+    auto* source = modification->getAudioSource();
+    auto text = [] (const char* s) { return s != nullptr ? String::fromUTF8 (s) : String(); };
+    if (auto* seq = region->getRegionSequence()) v.track = text (seq->getName());
+    v.clip = text (region->getEffectiveName());
+    if (v.clip.isEmpty()) v.clip = text (source->getName());
+    const double startInSource = region->getStartInAudioModificationTime(), length = region->getDurationInAudioModificationTime();
+    v.length = length;
+    const double t = araTime.load();
+    if (t >= 0.0)
+    {
+        const double rel = t - region->getStartInPlaybackTime();
+        v.playhead = rel >= 0.0 && rel <= region->getDurationInPlaybackTime() ? rel : -1.0;
+    }
+    v.playing = araPlaying.load();
+
+    // the waveform: one peak per 10 ms of the event's own audio, read once per event (and again if it is trimmed)
+    const auto key = String::toHexString ((pointer_sized_int) source) + ":" + String (startInSource, 3) + ":" + String (length, 3);
+    {
+        std::lock_guard<std::mutex> g (peakMutex);
+        if (key == peakKey) { v.peaks = peaks; return v; }
+        peakKey = key; peaks.clear();
+    }
+    if (! source->isSampleAccessEnabled()) { std::lock_guard<std::mutex> g (peakMutex); peakKey.clear(); return v; }
+    auto reader = std::make_shared<std::unique_ptr<ARAAudioSourceReader>> (std::make_unique<ARAAudioSourceReader> (source));
+    const double sr = source->getSampleRate();
+    const int64 first = (int64) std::llround (startInSource * sr), total = (int64) std::llround (length * sr);
+    peakPool.addJob ([this, reader, key, sr, first, total]
+    {
+        std::vector<float> out;
+        const int per = jmax (1, (int) std::lround (sr * 0.01)), chunk = per * 100;
+        AudioBuffer<float> buf (2, chunk);
+        for (int64 pos = 0; pos < total; pos += chunk)
+        {
+            const int count = (int) jmin ((int64) chunk, total - pos);
+            if (! (*reader)->read (&buf, 0, count, first + pos, true, true)) break;
+            for (int i = 0; i < count; i += per)
+            {
+                float m = 0.0f;
+                for (int j = i; j < jmin (count, i + per); ++j) m = jmax (m, std::abs (buf.getSample (0, j)), std::abs (buf.getSample (1, j)));
+                out.push_back (jmin (1.0f, m));
+            }
+            std::lock_guard<std::mutex> g (peakMutex);
+            if (peakKey != key) break;   // another event in the meantime
+        }
+        {
+            std::lock_guard<std::mutex> g (peakMutex);
+            if (peakKey == key) peaks = std::move (out);
+        }
+        MessageManager::callAsync ([reader] { reader->reset(); });   // the reader is let go on the message thread, where it was made
+    });
+   #endif
+    return v;
+}

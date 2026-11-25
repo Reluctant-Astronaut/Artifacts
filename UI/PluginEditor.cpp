@@ -2133,6 +2133,62 @@ WordsWindow::WordsWindow()
               { "home", 6.96f, 8.05f, juce::String::fromUTF8 ("HARMONY \xc2\xb7 THROW \xc2\xb7 ECHO"), true } };
 }
 
+// the live view: the vocal event's own waveform, ten seconds of it at a time, the song's place a third of the way in
+void WordsWindow::paintLive (juce::Graphics& g)
+{
+    using namespace juce;
+    const auto r = getLocalBounds().toFloat();
+    const Colour ink (0xff2a2210), oxblood (0xff8f2a1e);
+    const float pad = 14.0f, x0 = r.getX() + pad, w = r.getWidth() - 2 * pad;
+    auto clockText = [] (double t) { t = jmax (0.0, t); return String ((int) (t / 60.0)) + ":" + String ((int) std::fmod (t, 60.0)).paddedLeft ('0', 2); };
+    g.setFont (KintsugiFonts::serif (9.0f, false).withExtraKerningFactor (0.12f));
+    g.setColour (ink.withAlpha (0.75f));
+    String name = view.track.isNotEmpty() ? view.track.toUpperCase() : String ("VOCAL");
+    if (view.clip.isNotEmpty() && view.clip != view.track) name << String::fromUTF8 ("  \xc2\xb7  ") << view.clip.toUpperCase();
+    g.drawText (name, Rectangle<float> (x0, r.getY() + 6.0f, w * 0.6f, 14.0f), Justification::centredLeft);
+    const String st = "ARA  " + String::fromUTF8 ("\xc2\xb7  ") + (view.playhead >= 0.0 ? clockText (view.playhead) + " / " : String()) + clockText (view.length)
+                    + String::fromUTF8 ("  \xc2\xb7  ") + "WORDS: TRANSCRIPTION COMES NEXT";
+    g.drawText (st, Rectangle<float> (x0 + w * 0.4f, r.getY() + 6.0f, w * 0.6f, 14.0f), Justification::centredRight);
+    g.setColour (ink.withAlpha (0.3f));
+    g.fillRect (x0, r.getY() + 23.0f, w, 0.8f);
+
+    const double span = 10.0, len = jmax (0.01, view.length);
+    double t0 = 0.0;
+    if (view.playhead >= 0.0) t0 = jlimit (0.0, jmax (0.0, len - span), view.playhead - span * 0.3);
+    auto xAt = [&] (double t) { return x0 + (float) ((t - t0) / span) * w; };
+    const float cy = r.getCentreY() + 8.0f, maxA = (r.getHeight() - 40.0f) * 0.45f;
+    if (view.peaks.empty())
+    {
+        g.setColour (ink.withAlpha (0.6f));
+        g.drawText ("READING THE VOCAL" + String::fromUTF8 ("\xe2\x80\xa6"), Rectangle<float> (x0, cy - 10.0f, w, 20.0f), Justification::centred);
+    }
+    else
+    {
+        g.setColour (ink.withAlpha (0.75f));
+        for (float x = x0 + 1.0f; x < x0 + w - 1.0f; x += 1.5f)
+        {
+            const double t = t0 + (x - x0) / w * span;
+            const int i0 = (int) (t * 100.0), i1 = jmax (i0 + 1, (int) ((t + 1.5 / w * span) * 100.0));
+            if (t > len) break;
+            float m = 0.0f;
+            for (int i = jmax (0, i0); i < jmin ((int) view.peaks.size(), i1); ++i) m = jmax (m, view.peaks[(size_t) i]);
+            const float a = jmax (0.4f, maxA * std::sqrt (m));   // a little lifted, so a quiet word still shows
+            g.drawLine (x, cy - a, x, cy + a, 0.9f);
+        }
+    }
+    g.setColour (ink.withAlpha (0.3f));
+    g.drawLine (x0, cy, x0 + w, cy, 0.5f);
+    if (view.playhead >= 0.0)
+    {
+        const float px = xAt (view.playhead);
+        g.setColour (Colour (0xffc4561a).withAlpha (0.85f));
+        g.drawLine (px, r.getY() + 27.0f, px, r.getBottom() - 6.0f, 1.0f);
+        Path tri; tri.addTriangle (px - 4.0f, r.getY() + 25.0f, px + 4.0f, r.getY() + 25.0f, px, r.getY() + 31.0f);
+        g.fillPath (tri);
+    }
+    ignoreUnused (oxblood);
+}
+
 void WordsWindow::paint (juce::Graphics& g)
 {
     using namespace juce;
@@ -2146,6 +2202,7 @@ void WordsWindow::paint (juce::Graphics& g)
     g.fillRoundedRectangle (r, 3.0f);
     g.setColour (Colour (0xff3a2f14).withAlpha (0.85f));
     g.drawRoundedRectangle (r.reduced (0.5f), 3.0f, 1.0f);
+    if (live) { paintLive (g); return; }
 
     const float pad = 14.0f, x0 = r.getX() + pad, w = r.getWidth() - 2 * pad;
     auto xAt = [&] (float t) { return x0 + w * t / length; };
@@ -3238,6 +3295,19 @@ ArtifactsEditor::ArtifactsEditor (ArtifactsProcessor& p)
         plateArea.addAndMakeVisible (wordsWindow);
         plateArea.addAndMakeVisible (applyKeys);
         wordsWindow.setTooltip ("The vocal's words: select them like text, then apply an effect");
+        if (juce::SystemStats::getEnvironmentVariable ("DUALITY_LIVE_PREVIEW", "") == "1")   // (preview of the live ARA view, for the renders)
+        {
+            WordsView v; v.ara = true; v.track = "Vox (R)"; v.clip = "Vox (R)_03"; v.length = 192.0; v.playhead = 63.4; v.playing = true;
+            juce::Random rng (4);
+            for (int i = 0; i < 19200; ++i)
+            {
+                const double t = i * 0.01, phrase = std::fmod (t, 4.0);
+                const float env = phrase < 3.2 ? (float) (0.35 + 0.35 * std::sin (t * 9.0) * std::sin (t * 2.3)) : 0.01f;
+                v.peaks.push_back (juce::jlimit (0.0f, 1.0f, std::abs (env) * (0.6f + 0.4f * rng.nextFloat())));
+            }
+            wordsWindow.setView (v);
+            previewLive = true;
+        }
         iron->name = "Perspective"; iron->stepLabels = { "OBJECT", "KENSHO", "SUBJECT" };
         iron->slider.getProperties().set ("brassPointer", true);
 
@@ -3553,6 +3623,13 @@ void ArtifactsEditor::timerCallback()
         consoleLamp.setGlow (cOn ? 1.0f : 0.0f);
         tapeLamp.setGlow (tOn ? 1.0f : 0.0f);
         noiseSwitch.setOn (false); noiseLamp.setGlow (0.0f);   // Sync / Freeze: they arrive with the words
+        {   // the Words window: the vocal event Duality is bound to (ARA), refreshed some 20 times a second
+            if (++wordsTick % 3 == 0 && ! previewLive)
+            {
+                auto v = proc.getWordsView();
+                if (v.ara || wordsWindow.live) wordsWindow.setView (std::move (v));
+            }
+        }
     }
     else if (mockVariant == 4)   // Anemoia: Echos and Memories each have their own in/out switch; Sync picks the time source
     {
