@@ -65,8 +65,10 @@ private:
     } hp[2], lp[2];   // two in a row each: 24 dB per octave, as steep as the classic filters
     float appliedLow = -1.0f, appliedHigh = -1.0f;
 
+    // De-esser on the send, always on: an S goes into the plate softened, so the tail never hisses
+    Biquad deSplit; float deHi = 0.0f, deLo = 0.0f, deGain = 1.0f;
     // Duck: the plate steps back while the voice sings, and blooms in the gaps
-    float duckEnv = 0.0f, duckGain = 1.0f;
+    float duckEnv = 0.0f, duckGain = 1.0f; int duckHold = 0;
 
     juce::AudioBuffer<float> dryBuf, wetBuf;
     std::vector<float> send;

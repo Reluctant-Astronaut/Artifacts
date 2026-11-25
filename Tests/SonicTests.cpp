@@ -1320,6 +1320,89 @@ static void testEquanimity (double sr)
     }
 }
 
+
+//==============================================================================
+// Duality: how the plate treats a voice. Band decay times, what it does to an S, and what Duck does in the gaps.
+static void plateProbe (double sr)
+{
+    auto band = [sr] (const Buf& x, double fc, double q)   // a two-pole band-pass (RBJ), run twice
+    {
+        const double w = MathConstants<double>::twoPi * fc / sr, al = std::sin (w) / (2.0 * q), c = std::cos (w), a0 = 1.0 + al;
+        const double b0 = al / a0, b2 = -al / a0, a1 = -2.0 * c / a0, a2 = (1.0 - al) / a0;
+        Buf y = x;
+        for (int pass = 0; pass < 2; ++pass)
+        {
+            double z1 = 0, z2 = 0;
+            for (auto& v : y) { const double o = b0 * v + z1; z1 = -a1 * o + z2; z2 = b2 * v - a2 * o; v = (float) o; }
+        }
+        return y;
+    };
+    auto rt60 = [] (const Buf& ir, double srr)   // Schroeder integral, slope from -5 to -25 dB, times 3
+    {
+        std::vector<double> e (ir.size()); double acc = 0;
+        for (int i = (int) ir.size() - 1; i >= 0; --i) { acc += (double) ir[(size_t) i] * ir[(size_t) i]; e[(size_t) i] = acc; }
+        const double e0 = e[0]; int i5 = -1, i25 = -1;
+        for (size_t i = 0; i < e.size(); ++i) { const double d = 10.0 * std::log10 (e[i] / e0 + 1e-30);
+            if (i5 < 0 && d <= -5.0) i5 = (int) i; if (i25 < 0 && d <= -25.0) { i25 = (int) i; break; } }
+        return (i5 < 0 || i25 < 0) ? -1.0 : 3.0 * (i25 - i5) / srr;
+    };
+    auto setup = [] (Rig& r, float duck) { r.set ("perspective", 0); r.norm ("mix", 1.0f); r.set ("pduck", duck); };
+
+    {   // decay per band
+        Rig r (sr); setup (r, 0.0f);
+        const int n = (int) (sr * 9.0);
+        Buf x ((size_t) n, 0.0f), oL, oR; x[100] = 1.0f;
+        r.process (x, x, oL, oR);
+        for (double f : { 250.0, 500.0, 1000.0, 2000.0, 4000.0, 8000.0, 12000.0 })
+            row ("plate", "RT60_" + String ((int) f) + "Hz_s", rt60 (band (oL, f, 1.4), sr), "INFO");
+    }
+    // a sung phrase: vowels (a harmonic voice at 180 Hz) with an S between them
+    const int n = (int) (sr * 6.0);
+    Buf v ((size_t) n, 0.0f);
+    Random rng (3);
+    auto vowel = [&] (double t0, double t1, float amp)
+    {
+        for (int i = (int) (t0 * sr); i < (int) (t1 * sr) && i < n; ++i)
+        {
+            const double t = i / sr, env = std::min (1.0, std::min ((t - t0) / 0.03, (t1 - t) / 0.05));
+            double s = 0; for (int h = 1; h <= 22; ++h) s += std::sin (MathConstants<double>::twoPi * 180.0 * h * t) / h * (h > 4 ? 0.6 : 1.0);
+            v[(size_t) i] += (float) (amp * env * s * 0.35);
+        }
+    };
+    vowel (0.2, 0.9, 0.5f); vowel (1.05, 1.7, 0.5f); vowel (1.85, 2.5, 0.5f);
+    {   // an S at 0.92 s and one at the end of the phrase, 2.55 s: hiss from 5 to 10 kHz, as hot as the vowels' peaks
+        Buf s ((size_t) n, 0.0f);
+        for (double t0 : { 0.92, 2.55 })
+            for (int i = (int) (t0 * sr); i < (int) ((t0 + 0.12) * sr); ++i) s[(size_t) i] = (float) (rng.nextFloat() * 2.0 - 1.0);
+        s = band (s, 7000.0, 1.0);
+        const double g = 0.35 / std::max (1e-9, peakOf (s));
+        for (int i = 0; i < n; ++i) v[(size_t) i] += (float) (s[(size_t) i] * g);
+    }
+    auto hfOverMid = [&] (const Buf& x, double t0, double t1)
+    {
+        const auto h = band (x, 7000.0, 1.0), m = band (x, 1000.0, 0.7);
+        return db (rms (h, (int) (t0 * sr), (int) (t1 * sr))) - db (rms (m, (int) (t0 * sr), (int) (t1 * sr)));
+    };
+    {
+        Rig r (sr); setup (r, 0.0f);
+        Buf oL, oR; r.process (v, v, oL, oR);
+        const double dry = hfOverMid (v, 0.2, 2.7);
+        row ("plate", "S_dry_hf_vs_mid_dB", dry, "INFO");
+        row ("plate", "S_wet_whole_phrase_hf_vs_mid_dB", hfOverMid (oL, 0.2, 2.7) - dry, "INFO");
+        row ("plate", "S_tail_after_phrase_hf_vs_mid_dB", hfOverMid (oL, 2.75, 3.6) - dry, "INFO");
+    }
+    for (float duck : { 0.0f, 0.5f, 1.0f })   // Duck: the plate while singing, and in the gap after the phrase
+    {
+        Rig r (sr); setup (r, duck);
+        Buf oL, oR; r.process (v, v, oL, oR);
+        const double sing = db (rms (oL, (int) (0.4 * sr), (int) (2.4 * sr)));
+        const double gap1 = db (rms (oL, (int) (2.75 * sr), (int) (3.0 * sr)));
+        const double gap2 = db (rms (oL, (int) (3.0 * sr), (int) (3.5 * sr)));
+        row ("plate", "duck" + String (duck, 1) + "_while_singing_dB", sing, "INFO");
+        row ("plate", "duck" + String (duck, 1) + "_gap_0.1to0.35s_dB", gap1, "INFO");
+        row ("plate", "duck" + String (duck, 1) + "_gap_0.35to0.85s_dB", gap2, "INFO");
+    }
+}
 int main (int argc, char** argv)
 {
     ScopedJuceInitialiser_GUI init;
@@ -1336,6 +1419,7 @@ int main (int argc, char** argv)
     if (argc > 2 && String (argv[2]) == "probe") { probeEquanimity (sr); return 0; }
     if (argc > 2 && String (argv[2]) == "uiprobe") { uiProbe (sr); return 0; }
     if (argc > 2 && String (argv[2]) == "hiprobe") { hiProbe(); return 0; }
+    if (argc > 2 && String (argv[2]) == "plateprobe") { plateProbe (sr); return 0; }
     if (gName.contains ("Equanimity")) { testEquanimity (sr); return 0; }
     testLatency (sr);
     testNull (sr);

@@ -95,7 +95,8 @@ void DualityProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     plate.prepare (sampleRate);
     for (auto* f : { &hp[0], &hp[1], &lp[0], &lp[1] }) f->reset();
     appliedLow = appliedHigh = -1.0f;
-    duckEnv = 0.0f; duckGain = 1.0f;
+    duckEnv = -100.0f; duckGain = 1.0f; duckHold = 0;
+    deSplit.reset(); designLP (deSplit, sampleRate, 4500.0, 0.7071); deHi = deLo = 0.0f; deGain = 1.0f;
 
     sPre.reset (sampleRate, 0.08); sWidth.reset (sampleRate, 0.05); sMix.reset (sampleRate, 0.05);
     sOut.reset (sampleRate, 0.03); gPlate.reset (sampleRate, 0.08); sLow.reset (sampleRate, 0.05); sHigh.reset (sampleRate, 0.05);
@@ -154,11 +155,21 @@ void DualityProcessor::processBlock (AudioBuffer<float>& buffer, MidiBuffer&)
         // the send: mono, pre-delayed, then the low and high cut
         sLow.skip (n); sHigh.skip (n);
         updateFilters (sLow.getCurrentValue(), sHigh.getCurrentValue());
+        const float eAtk = 1.0f - std::exp (-1.0f / (0.0005f * (float) sr)), eRel = 1.0f - std::exp (-1.0f / (0.030f * (float) sr));
+        const float dAtk = 1.0f - std::exp (-1.0f / (0.0008f * (float) sr)), dRel = 1.0f - std::exp (-1.0f / (0.060f * (float) sr));
         for (int i = 0; i < n; ++i)
         {
             preDelay.pushSample (0, 0.5f * (inL[i] + inR[i]));
             float x = preDelay.popSample (0, sPre.getNextValue());
             x = hp[1].process (hp[0].process (x));
+            // the de-esser: above 4.5 kHz may not be louder than a third of what is below it; an S is held down to that
+            const float lo = deSplit.process (x), hi = x - lo;
+            deHi += (std::abs (hi) > deHi ? eAtk : eRel) * (std::abs (hi) - deHi);
+            deLo += (std::abs (lo) > deLo ? eAtk : eRel) * (std::abs (lo) - deLo);
+            const float allowed = 0.33f * deLo + 1.0e-6f;
+            const float target = deHi > allowed ? juce::jmax (0.1f, allowed / deHi) : 1.0f;
+            deGain += (target < deGain ? dAtk : dRel) * (target - deGain);
+            x = lo + hi * deGain;
             x = lp[1].process (lp[0].process (x));
             send[(size_t) i] = x;
         }
@@ -168,20 +179,24 @@ void DualityProcessor::processBlock (AudioBuffer<float>& buffer, MidiBuffer&)
         const float levelTrim = std::pow (2.2f / rt, 0.25f);
         plate.process (send.data(), wL, wR, n);
 
-        // Duck: follows the dry voice; the louder it sings, the further the plate steps back (up to 18 dB)
+        // Duck: follows the dry voice. While it sings the plate steps back (up to 24 dB); the moment it stops,
+        // the plate comes back up within a fifth of a second, so the tail blooms in the gap.
+        // The voice is followed in dB, so a falling level is seen at once (a linear follower takes a second to fall 30 dB).
         const float duck = pDuck->load();
-        const float atk = 1.0f - std::exp (-1.0f / (0.005f * (float) sr)), rel = 1.0f - std::exp (-1.0f / (0.30f * (float) sr));
-        const float gAtk = 1.0f - std::exp (-1.0f / (0.015f * (float) sr)), gRel = 1.0f - std::exp (-1.0f / (0.25f * (float) sr));
+        const float atk = 1.0f - std::exp (-1.0f / (0.003f * (float) sr)), rel = 1.0f - std::exp (-1.0f / (0.040f * (float) sr));
+        const float gAtk = 1.0f - std::exp (-1.0f / (0.020f * (float) sr)), gRel = 1.0f - std::exp (-1.0f / (0.080f * (float) sr));
+        const int holdSamples = (int) (0.05 * sr);
         for (int i = 0; i < n; ++i)
         {
-            const float lvl = std::max (std::abs (inL[i]), std::abs (inR[i]));
-            duckEnv += (lvl > duckEnv ? atk : rel) * (lvl - duckEnv);
+            const float lvlDb = Decibels::gainToDecibels (std::max (std::abs (inL[i]), std::abs (inR[i])), -100.0f);
+            if (lvlDb > duckEnv) { duckEnv += atk * (lvlDb - duckEnv); duckHold = holdSamples; }
+            else if (duckHold > 0) --duckHold;
+            else duckEnv += rel * (lvlDb - duckEnv);
             float target = 1.0f;
             if (duck > 0.001f)
             {
-                const float envDb = Decibels::gainToDecibels (duckEnv, -100.0f);
-                const float amount = jlimit (0.0f, 1.0f, (envDb + 45.0f) / 30.0f);   // from -45 dBFS to -15 dBFS the ducking deepens
-                target = Decibels::decibelsToGain (-18.0f * duck * amount);
+                const float amount = jlimit (0.0f, 1.0f, (duckEnv + 50.0f) / 20.0f);   // from -50 dBFS to -30 dBFS the ducking comes in fully
+                target = Decibels::decibelsToGain (-24.0f * duck * amount);
             }
             duckGain += (target < duckGain ? gAtk : gRel) * (target - duckGain);
             const float g = gPlate.getNextValue() * duckGain * 1.0f * levelTrim;
