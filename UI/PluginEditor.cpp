@@ -2180,7 +2180,7 @@ void WordsWindow::paintLive (juce::Graphics& g)
         g.fillRect (x0, r.getY() + 22.4f, w * jlimit (0.0f, 1.0f, view.progress), 2.0f);
     }
 
-    const double span = 10.0, len = jmax (0.01, view.length);
+    const double span = zoomSpan, len = jmax (0.01, view.length);
     double t0 = 0.0;
     if (scrollT0 >= 0.0 && ! view.playing) t0 = scrollT0;   // scrolled by hand while the song is stopped
     else if (view.playhead >= 0.0) t0 = view.playhead - span * 0.3;
@@ -2189,16 +2189,18 @@ void WordsWindow::paintLive (juce::Graphics& g)
     hits.clear();
     if (lyricsPage != nullptr) return;   // the lyrics page covers the rest
     auto xAt = [&] (double t) { return x0 + (float) ((t - t0) / span) * w; };
-    const float wordsH = hasWords ? 30.0f : 0.0f;
+    const float wordsH = hasWords ? 40.0f : 0.0f;
     const float cy = r.getCentreY() + 8.0f + wordsH * 0.5f, maxA = (r.getHeight() - 40.0f - wordsH) * 0.45f;
     if (hasWords)
     {
         // the words, each over where it is sung; selected ones like selected text; one being retyped as a field;
         // a word the listening was unsure of gets a dotted underline, to check
-        const float wy = r.getY() + 30.0f, wh = 22.0f;
-        const auto f = KintsugiFonts::serif (15.0f, false);
-        float lastRight = -1.0e9f;
-        wordRow = Rectangle<float> (x0, wy - 4.0f, w, wh + 8.0f);
+        // two lanes: each word as near as it fits over where it is sung - on the upper lane, or the lower one when its
+        // neighbour is in the way - so a quick phrase never drifts away from its waveform
+        const float wy = r.getY() + 27.0f, wh = 19.0f;
+        const auto f = KintsugiFonts::serif (14.0f, false);
+        float laneRight[2] = { -1.0e9f, -1.0e9f };
+        wordRow = Rectangle<float> (x0, wy - 2.0f, w, 2.0f * wh + 4.0f);
         int index = -1;
         g.saveState();
         g.reduceClipRegion (Rectangle<float> (x0, wy - 4.0f, w, r.getBottom() - wy).toNearestInt());
@@ -2209,10 +2211,21 @@ void WordsWindow::paintLive (juce::Graphics& g)
             if (b < x0 - 60.0f || a > x0 + w + 60.0f) continue;
             wd.editing = wd.id >= 0 && wd.id == editingId;
             const String text = wd.editing ? wd.text + "|" : wd.text;
-            auto box = Rectangle<float> (jmax (GlyphArrangement::getStringWidth (f, wd.text) + 10.0f, b - a), wh).withCentre ({ (a + b) * 0.5f, wy + wh * 0.5f });
-            if (box.getX() < lastRight + 4.0f) box.setX (lastRight + 4.0f);
-            lastRight = box.getRight();
+            const float tw = GlyphArrangement::getStringWidth (f, wd.text) + 8.0f;
+            const float want = jmax (a - 2.0f, (a + b) * 0.5f - tw * 0.5f);   // centred over the word, never starting before it
+            int lane = 0;
+            if (want < laneRight[0] + 3.0f) lane = want >= laneRight[1] + 3.0f ? 1 : (laneRight[1] < laneRight[0] ? 1 : 0);
+            const float left = jmax (want, laneRight[lane] + 3.0f);
+            laneRight[lane] = left + tw;
+            auto box = Rectangle<float> (left, wy + lane * (wh + 2.0f), tw, wh);
             hits.push_back ({ box, index });
+            const bool now = view.playhead >= wd.t0 && view.playhead < wd.t1;   // the word being sung
+            if (left - want > 4.0f || lane == 1)   // pushed aside: a hairline down to where it starts
+            {
+                g.setColour (ink.withAlpha (0.25f));
+                g.drawLine (a + 0.5f, box.getBottom(), a + 0.5f, cy - maxA - 2.0f, 0.6f);
+                g.drawLine (a + 0.5f, box.getBottom(), jmin (box.getX() + 4.0f, box.getRight()), box.getBottom(), 0.6f);
+            }
             if (wd.selected)
             {
                 g.setColour (Colour (0xffffb347).withAlpha (0.55f));
@@ -2228,7 +2241,7 @@ void WordsWindow::paintLive (juce::Graphics& g)
                 g.drawRoundedRectangle (box.expanded (3.0f, 1.0f), 2.0f, 1.0f);
             }
             g.setFont (f);
-            g.setColour (ink.withAlpha (wd.editing ? 1.0f : 0.92f));
+            g.setColour (now && ! wd.editing ? Colour (0xffc4561a) : ink.withAlpha (wd.editing ? 1.0f : 0.92f));
             if (wd.editing)
             {
                 g.drawText (wd.text, box, Justification::centred);
@@ -2382,8 +2395,21 @@ void WordsWindow::mouseDoubleClick (const juce::MouseEvent& e)
     if (i >= 0) beginEdit (i);
 }
 
+void WordsWindow::mouseMagnify (const juce::MouseEvent&, float scale)
+{
+    if (! live) return;
+    zoomSpan = juce::jlimit (2.0, 30.0, zoomSpan / juce::jmax (0.1f, scale));
+    repaint();
+}
+
 void WordsWindow::mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& w)
 {
+    if (live && (e.mods.isCommandDown() || e.mods.isCtrlDown()))   // zoom: in towards the words, out to see the phrase
+    {
+        zoomSpan = juce::jlimit (2.0, 30.0, zoomSpan * std::pow (2.0, -(double) w.deltaY * 2.0));
+        repaint();
+        return;
+    }
     if (! live || view.playing) { Component::mouseWheelMove (e, w); return; }
     const float d = std::abs (w.deltaX) > std::abs (w.deltaY) ? -w.deltaX : -w.deltaY;
     scrollT0 = juce::jlimit (0.0, juce::jmax (0.0, view.length - shownSpan), shownT0 + d * shownSpan * 0.6);

@@ -142,6 +142,8 @@ private:
     juce::Rectangle<float> transcribeKey, lyricsKey, wordRow, waveArea;
     double shownT0 = 0.0, shownSpan = 10.0; float shownX0 = 0, shownW = 1;
     double scrollT0 = -1.0;   // the song stopped: where the window was scrolled to (-1: following the song)
+    double zoomSpan = 8.0;    // seconds across the window (Cmd/Ctrl + scroll, or pinch, zooms)
+    void mouseMagnify (const juce::MouseEvent&, float scale) override;
     int anchor = -1;          // the word a drag started on
     bool dragged = false;
     int hitAt (juce::Point<float>, bool nearest) const;
