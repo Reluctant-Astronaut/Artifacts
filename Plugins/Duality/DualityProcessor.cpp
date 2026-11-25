@@ -64,7 +64,7 @@ AudioProcessorValueTreeState::ParameterLayout DualityProcessor::createLayout()
     // the words (ARA): Echo and Throw, the effects of the Focus keys on the words they are put on
     auto signedPct = AudioParameterFloatAttributes().withStringFromValueFunction ([] (float v, int)
         { return std::abs (v) < 0.02f ? String ("0") : (v < 0 ? "dark " : "bright ") + String (roundToInt (std::abs (v) * 100.0f)); });
-    p.push_back (std::make_unique<AudioParameterBool> (ParameterID { "esync", 1 }, "Echo Sync", true));
+    p.push_back (std::make_unique<AudioParameterChoice> (ParameterID { "esync", 1 }, "Echo Sync", StringArray { "Off", "On" }, 1));   // (two-step choices, not bools: a bool keeps an in-between value a host sets, and a saved state then does not restore it)
     p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "etime", 1 }, "Echo Time", skewed (20.0f, 2000.0f, 300.0f), 375.0f,
         AudioParameterFloatAttributes().withLabel ("ms").withStringFromValueFunction ([] (float v, int) { return String (roundToInt (v)) + " ms"; })));
     {
@@ -75,7 +75,7 @@ AudioProcessorValueTreeState::ParameterLayout DualityProcessor::createLayout()
     p.push_back (std::make_unique<AudioParameterChoice> (ParameterID { "etype", 1 }, "Echo Type", StringArray { "Tape", "Digital", "Ping-Pong" }, 0));
     p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "etone", 1 }, "Echo Tone", NormalisableRange<float> (-1.0f, 1.0f, 0.001f), -0.3f, signedPct));
     p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "eamt", 1 }, "Echo Amount", unit, 0.5f, pct));
-    p.push_back (std::make_unique<AudioParameterBool> (ParameterID { "tfreeze", 1 }, "Throw Freeze", false));
+    p.push_back (std::make_unique<AudioParameterChoice> (ParameterID { "tfreeze", 1 }, "Throw Freeze", StringArray { "Off", "On" }, 0));
     p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "tdecay", 1 }, "Throw Decay", skewed (0.5f, 20.0f, 4.0f), 4.0f,
         AudioParameterFloatAttributes().withLabel ("s").withStringFromValueFunction ([] (float v, int) { return String (v, v < 10.0f ? 1 : 0) + " s"; })));
     p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "tpre", 1 }, "Throw Pre-delay", skewed (0.0f, 250.0f, 50.0f), 30.0f,
