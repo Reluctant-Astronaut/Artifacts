@@ -1,14 +1,13 @@
 #pragma once
 
 #include "ArtifactsProcessor.h"
-#include <juce_audio_formats/juce_audio_formats.h>
-#include "PlateReverb.h"
-#include "HallReverb.h"
+#include "VocalPlate.h"
 
-// Duality: two ways of making a space, and the point where they become one.
-//   Object  - an algorithmic reverb (Room, Hall or Plate): a space built from rules
-//   Subject - an impulse response: a space that was really there
-//   Kensho  - both at once, fused into a single space
+// Duality: the vocal plate, and the words.
+//   Object  - the plate on the whole vocal (the Plate section)
+//   Subject - effects only on the words you mark (the Words section: throw, echo, swell, double, harmony, shift)
+//   Kensho  - both: the plate on everything, and the words' effects on top
+// This build: the plate. The Words section (with ARA and the transcription) follows.
 class DualityProcessor : public ArtifactsProcessor
 {
 public:
@@ -28,7 +27,7 @@ public:
     bool acceptsMidi() const override { return false; }
     bool producesMidi() const override { return false; }
     bool isMidiEffect() const override { return false; }
-    double getTailLengthSeconds() const override { return 12.0; }
+    double getTailLengthSeconds() const override { return 10.0; }
 
     int getNumPrograms() override;
     int getCurrentProgram() override { return currentProgram.load(); }
@@ -41,61 +40,40 @@ public:
 
     static juce::AudioProcessorValueTreeState::ParameterLayout createLayout();
 
-    IRInfo getIRInfo() const override;
-    juce::String loadIR (const juce::File&) override;      // message thread
-    void loadBuiltInIR (int index);                          // message thread
-    int irPresetCount() const override { return numBuiltInIRs(); }
-    juce::String irPresetName (int i) const override { return builtInIRName (i); }
-    void loadIRPreset (int i) override { loadBuiltInIR (i); }
-    static int numBuiltInIRs();
-    static juce::String builtInIRName (int index);
-
 private:
-    void pushIRToEngine();
-    static void shapeIR (juce::AudioBuffer<float>& ir, double rate, bool mono, float decay, float damping);
+    void updateFilters (float lowCut, float highCut);
 
     double sr = 48000.0;
-    int maxBlock = 512;
     std::atomic<int> currentProgram { 0 };
 
     using Interp = juce::dsp::DelayLineInterpolationTypes::Lagrange3rd;
-    juce::dsp::DelayLine<float, Interp> preRev { 48000 }, preIR { 48000 };
-    PlateReverb plate;
-    HallReverb hall;
-    juce::dsp::Convolution conv;
-    juce::dsp::IIR::Filter<float> fuse[2], air[2];
+    juce::dsp::DelayLine<float, Interp> preDelay { 48000 };
+    VocalPlate plate;
 
-    // Kensho: a short shared diffusion that fuses the two reverbs into one space
-    struct Allpass
+    // the send's filters, as on the Abbey Road plate sends: two-pole high-pass and low-pass
+    struct Biquad
     {
-        std::vector<float> buf; int w = 0; float g = 0.45f;
-        void setSize (int n) { buf.assign ((size_t) std::max (2, n), 0.0f); w = 0; }
+        double b0 = 1, b1 = 0, b2 = 0, a1 = 0, a2 = 0, z1 = 0, z2 = 0;
         float process (float x)
         {
-            const float d = buf[(size_t) w];
-            const float v = x + g * d;
-            buf[(size_t) w] = v;
-            if (++w >= (int) buf.size()) w = 0;
-            return d - g * v;
+            const double y = b0 * x + z1;
+            z1 = b1 * x - a1 * y + z2;
+            z2 = b2 * x - a2 * y;
+            return (float) y;
         }
-    } blend[2][2], roomDiff[2][3];
+        void reset() { z1 = z2 = 0; }
+    } hp[2], lp[2];   // two in a row each: 24 dB per octave, as steep as the classic filters
+    float appliedLow = -1.0f, appliedHigh = -1.0f;
 
-    juce::AudioBuffer<float> dryBuf, algBuf, irBuf;
-    juce::SmoothedValue<float> sSize, sDamp, sPre, sLevel, sIDecay, sIDamp, sIPre, sILevel, sWidth, sMix, sOut, gAlg, gIR;
-    bool algRunning = true, irRunning = true;
-    float appliedIRDecay = -1.0f, appliedIRDamp = -1.0f;
+    // Duck: the plate steps back while the voice sings, and blooms in the gaps
+    float duckEnv = 0.0f, duckGain = 1.0f;
 
-    // IR source, kept as loaded so Decay and Damping can reshape it (message thread, guarded by irLock)
-    mutable juce::CriticalSection irLock;
-    juce::AudioBuffer<float> irSource;
-    double irRate = 48000.0;
-    bool irMono = false;
-    IRInfo irInfo;
-    std::atomic<bool> irDirty { false };
-    std::atomic<float> pendingDecay { 1.0f }, pendingDamp { 0.0f };
+    juce::AudioBuffer<float> dryBuf, wetBuf;
+    std::vector<float> send;
+    juce::SmoothedValue<float> sPre, sWidth, sMix, sOut, gPlate, sLow, sHigh;
+    bool plateRunning = true;
 
-    std::atomic<float> *pSize, *pDamp, *pPre, *pType, *pLevel, *pPersp,
-                       *pIDecay, *pIDamp, *pIPre, *pILevel, *pWidth, *pMix, *pOutput;
+    std::atomic<float> *pDecay, *pDamp, *pPre, *pLow, *pHigh, *pDuck, *pPersp, *pWidth, *pMix, *pOutput;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (DualityProcessor)
 };

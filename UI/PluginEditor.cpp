@@ -2120,6 +2120,246 @@ VUMeter::VUMeter (juce::String l, int v) : label (std::move (l)), variant (v)
     setInterceptsMouseClicks (false, false);
 }
 
+//==============================================================================
+// Duality: the Words window
+WordsWindow::WordsWindow()
+{
+    setMouseCursor (juce::MouseCursor::IBeamCursor);
+    // a demo take until a vocal is analysed (ARA): one sung line, with effects on some of its words
+    words = { { "I", 0.20f, 0.42f, "" }, { "keep", 0.46f, 0.84f, "" }, { "falling", 0.90f, 1.78f, "SWELL" },
+              { "into", 1.86f, 2.16f, "" }, { "the", 2.20f, 2.36f, "" }, { "quiet", 2.42f, 3.50f, "HARMONY +3RD" },
+              { "hold", 4.10f, 4.52f, "DOUBLE" }, { "on", 4.56f, 4.80f, "DOUBLE" }, { "to", 4.86f, 5.02f, "" },
+              { "me", 5.06f, 5.70f, "ECHO 1/8" }, { "I'm", 5.98f, 6.24f, "" }, { "almost", 6.30f, 6.86f, "" },
+              { "home", 6.96f, 8.05f, juce::String::fromUTF8 ("HARMONY \xc2\xb7 THROW \xc2\xb7 ECHO"), true } };
+}
+
+void WordsWindow::paint (juce::Graphics& g)
+{
+    using namespace juce;
+    const auto r = getLocalBounds().toFloat();
+    const Colour ink (0xff2a2210), oxblood (0xff8f2a1e), amber (0xffffb347);
+    g.setGradientFill (ColourGradient (Colour (0xfff4ecd0), r.getX(), r.getY(), Colour (0xffdccfa1), r.getRight(), r.getBottom(), false));
+    g.fillRoundedRectangle (r, 3.0f);
+    g.setGradientFill (ColourGradient (Colours::black.withAlpha (0.34f), 0.0f, 0.0f, Colours::black.withAlpha (0.0f), 0.0f, 12.0f, false));
+    g.fillRoundedRectangle (r, 3.0f);
+    g.setGradientFill (ColourGradient (Colours::black.withAlpha (0.2f), 0.0f, 0.0f, Colours::black.withAlpha (0.0f), 10.0f, 0.0f, false));
+    g.fillRoundedRectangle (r, 3.0f);
+    g.setColour (Colour (0xff3a2f14).withAlpha (0.85f));
+    g.drawRoundedRectangle (r.reduced (0.5f), 3.0f, 1.0f);
+
+    const float pad = 14.0f, x0 = r.getX() + pad, w = r.getWidth() - 2 * pad;
+    auto xAt = [&] (float t) { return x0 + w * t / length; };
+    // the header: what is loaded, and what the window knows about it
+    g.setFont (KintsugiFonts::serif (9.0f, false).withExtraKerningFactor (0.12f));
+    g.setColour (ink.withAlpha (0.75f));
+    g.drawText (source, Rectangle<float> (x0, r.getY() + 6.0f, w * 0.5f, 14.0f), Justification::centredLeft);
+    g.drawText (status, Rectangle<float> (x0 + w * 0.5f, r.getY() + 6.0f, w * 0.5f, 14.0f), Justification::centredRight);
+    g.setColour (ink.withAlpha (0.3f));
+    g.fillRect (x0, r.getY() + 23.0f, w, 0.8f);
+
+    // the waveform, under the words
+    const float cy = r.getBottom() - 34.0f, maxA = 20.0f;
+    Random rng (11);
+    auto envAt = [&] (float t)
+    {
+        float e = 0.0f;
+        for (auto& wd : words)
+            if (t >= wd.t0 - 0.03f && t <= wd.t1 + 0.05f)
+            {
+                const float u = (t - wd.t0) / jmax (0.05f, wd.t1 - wd.t0);
+                e = jmax (e, std::sin (MathConstants<float>::pi * jlimit (0.0f, 1.0f, u * 0.9f + 0.05f)) * (0.55f + 0.45f * std::sin (u * 7.0f + wd.t0 * 3.0f) * 0.5f + 0.25f));
+            }
+        return e;
+    };
+    // the effects, drawn where they sound: a swell rising into its word, a throw's tail, an echo's repeats, a double's shadow
+    for (auto& wd : words)
+    {
+        const float a = xAt (wd.t0), b = xAt (wd.t1);
+        if (wd.tag.contains ("SWELL"))
+        {
+            Path p; const float s0 = xAt (jmax (0.0f, wd.t0 - 0.75f));
+            p.startNewSubPath (s0, cy); p.lineTo (a, cy - maxA * 0.9f); p.lineTo (a, cy + maxA * 0.9f); p.closeSubPath();
+            g.setGradientFill (ColourGradient (oxblood.withAlpha (0.0f), s0, cy, oxblood.withAlpha (0.28f), a, cy, false));
+            g.fillPath (p);
+        }
+        if (wd.tag.contains ("THROW"))
+        {
+            Path p; const float e1 = jmin (x0 + w, b + (x0 + w - b));
+            p.startNewSubPath (b - 6.0f, cy - maxA * 0.85f); p.quadraticTo (b + (e1 - b) * 0.35f, cy - maxA * 0.25f, e1, cy);
+            p.quadraticTo (b + (e1 - b) * 0.35f, cy + maxA * 0.25f, b - 6.0f, cy + maxA * 0.85f); p.closeSubPath();
+            g.setGradientFill (ColourGradient (oxblood.withAlpha (0.32f), b, cy, oxblood.withAlpha (0.0f), e1, cy, false));
+            g.fillPath (p);
+        }
+        if (wd.tag.contains ("ECHO"))
+            for (int k = 1; k <= 3; ++k)
+            {
+                const float off = xAt (0.30f * (float) k) - x0, gain = std::pow (0.55f, (float) k);
+                g.setColour (oxblood.withAlpha (0.30f * gain + 0.06f));
+                for (float x = a; x < b; x += 1.5f)
+                {
+                    const float v = maxA * envAt ((x - x0) / w * length) * gain;
+                    g.drawLine (x + off, cy - v, x + off, cy + v, 0.9f);
+                }
+            }
+    }
+    for (float x = x0 + 1.0f; x < x0 + w - 1.0f; x += 1.5f)
+    {
+        const float t = (x - x0) / w * length;
+        const float v = envAt (t) * (0.55f + 0.45f * rng.nextFloat());
+        const float a = jmax (0.4f, maxA * v);
+        g.setColour (ink.withAlpha (0.72f));
+        g.drawLine (x, cy - a, x, cy + a, 0.9f);
+    }
+    g.setColour (ink.withAlpha (0.3f));
+    g.drawLine (x0, cy, x0 + w, cy, 0.5f);
+
+    // the words, each where it is sung; the selected one highlighted like text, its effect printed above it
+    const float wy = r.getY() + 44.0f, wh = 24.0f;
+    const auto f = KintsugiFonts::serif (17.0f, false);
+    std::vector<Rectangle<float>> boxes;
+    for (auto& wd : words)   // each word over where it is sung, at least its own width, never touching the one before
+    {
+        const float a = xAt (wd.t0), b = xAt (wd.t1);
+        auto box = Rectangle<float> (jmax (GlyphArrangement::getStringWidth (f, wd.text) + 10.0f, b - a), wh).withCentre ({ (a + b) * 0.5f, wy + wh * 0.5f });
+        if (! boxes.empty() && box.getX() < boxes.back().getRight() + 5.0f) box.setX (boxes.back().getRight() + 5.0f);
+        boxes.push_back (box);
+    }
+    for (size_t i = 0; i < words.size(); ++i)
+    {
+        auto& wd = words[i];
+        auto box = boxes[i];
+        const float cx = box.getCentreX();
+        if (wd.selected)
+        {
+            g.setColour (amber.withAlpha (0.55f));
+            g.fillRoundedRectangle (box, 2.5f);
+            g.setColour (Colour (0xffc4561a).withAlpha (0.8f));
+            g.drawRoundedRectangle (box, 2.5f, 0.9f);
+            g.fillRect (box.getX() - 1.0f, box.getY() - 3.0f, 1.6f, box.getHeight() + 6.0f);   // the text cursor's ends
+            g.fillRect (box.getRight() - 0.6f, box.getY() - 3.0f, 1.6f, box.getHeight() + 6.0f);
+        }
+        g.setFont (f);
+        g.setColour (ink);
+        g.drawText (wd.text, box, Justification::centred);
+        if (wd.tag.isNotEmpty())
+        {
+            g.setColour (oxblood);
+            const bool joinNext = i + 1 < words.size() && words[i + 1].tag == wd.tag;   // a run is underlined as one
+            g.fillRect (box.getX() + (i > 0 && words[i - 1].tag == wd.tag ? -5.0f : 3.0f), box.getBottom() + 1.0f,
+                        box.getWidth() - (joinNext ? 3.0f : 6.0f) + (i > 0 && words[i - 1].tag == wd.tag ? 8.0f : 0.0f) + (joinNext ? 5.0f : 0.0f), 1.6f);
+            // one tag over a run of words with the same effect
+            if (i == 0 || words[i - 1].tag != wd.tag)
+            {
+                size_t j = i; while (j + 1 < words.size() && words[j + 1].tag == wd.tag) ++j;
+                const float tcx = (box.getX() + boxes[j].getRight()) * 0.5f;
+                g.setFont (KintsugiFonts::serif (8.0f, true).withExtraKerningFactor (0.14f));
+                g.drawText (wd.tag, Rectangle<float> (240.0f, 11.0f).withCentre ({ tcx, box.getY() - 7.0f }), Justification::centred);
+            }
+            // where the effect reaches into the waveform: a thin line down from the word
+            g.setColour (oxblood.withAlpha (0.35f));
+            g.drawLine (cx, box.getBottom() + 4.0f, cx, cy - maxA - 2.0f, 0.6f);
+        }
+    }
+    // the play head
+    const float px = xAt (playhead);
+    g.setColour (Colour (0xffc4561a).withAlpha (0.85f));
+    g.drawLine (px, r.getY() + 27.0f, px, r.getBottom() - 6.0f, 1.0f);
+    Path tri; tri.addTriangle (px - 4.0f, r.getY() + 25.0f, px + 4.0f, r.getY() + 25.0f, px, r.getY() + 31.0f);
+    g.fillPath (tri);
+}
+
+//==============================================================================
+// Duality: the Apply plate
+juce::Rectangle<float> ApplyKeys::keyBounds (int k) const
+{
+    const float kw = 80.0f, kh = 30.0f, gx = 12.0f, gy = 10.0f;
+    const float x0 = ((float) getWidth() - 2.0f * kw - gx) * 0.5f, y0 = 50.0f;
+    return { x0 + (float) (k % 2) * (kw + gx), y0 + (float) (k / 2) * (kh + gy), kw, kh };
+}
+void ApplyKeys::mouseDown (const juce::MouseEvent& e)
+{
+    for (int k = 0; k < 6; ++k)   // a key puts its effect on the selection and opens its settings; again turns it off
+        if (keyBounds (k).contains (e.position))
+        {
+            if (edit == k && (onMask >> k & 1)) onMask &= ~(1 << k); else onMask |= 1 << k;
+            edit = k; repaint(); if (onKey) onKey (k);
+        }
+}
+void ApplyKeys::paint (juce::Graphics& g)
+{
+    using namespace juce;
+    const auto b = getLocalBounds().toFloat().reduced (1.0f);
+    const Colour brassLite (0xfff0d998), brass (0xffc39b4e), brassDark (0xff6f5422), brassDeep (0xff3e2f14);
+    g.setColour (Colours::black.withAlpha (0.35f));
+    g.fillRoundedRectangle (b.translated (1.4f, 2.2f), 3.0f);
+    g.setGradientFill (ColourGradient (brassLite.interpolatedWith (brass, 0.35f), b.getX(), b.getY(), brassDark.interpolatedWith (brass, 0.3f), b.getRight(), b.getBottom(), false));
+    g.fillRoundedRectangle (b, 3.0f);
+    {
+        Graphics::ScopedSaveState ss (g);
+        g.reduceClipRegion (b.toNearestInt());
+        Random rng (5521);
+        for (int i = 0; i < (int) (b.getWidth() * b.getHeight() * 0.30f); ++i)
+        {
+            const Point<float> o (b.getX() + rng.nextFloat() * b.getWidth(), b.getY() + rng.nextFloat() * b.getHeight());
+            const float l = 4.0f + rng.nextFloat() * 16.0f;
+            g.setColour ((rng.nextBool() ? brassLite : brassDeep).withAlpha (0.05f + 0.07f * rng.nextFloat()));
+            g.drawLine ({ o.translated (-l * 0.5f, 0), o.translated (l * 0.5f, 0) }, 0.4f);
+        }
+    }
+    g.setColour (Colour (0xfffff3cf).withAlpha (0.55f));
+    g.drawRoundedRectangle (b.reduced (0.7f).translated (0.4f, 0.5f), 2.6f, 0.8f);
+    g.setColour (brassDeep.withAlpha (0.85f));
+    g.drawRoundedRectangle (b, 3.0f, 0.8f);
+    for (auto pt : { Point<float> (7.0f, 7.0f), Point<float> (b.getRight() - 6.0f, 7.0f), Point<float> (7.0f, b.getBottom() - 6.0f), Point<float> (b.getRight() - 6.0f, b.getBottom() - 6.0f) })
+    {
+        g.setColour (brassDeep.withAlpha (0.5f));
+        g.fillEllipse (Rectangle<float> (4.6f, 4.6f).withCentre (pt.translated (0.3f, 0.4f)));
+        g.setGradientFill (ColourGradient (Colour (0xfffbe8b4), pt.x - 1.4f, pt.y - 1.4f, brassDark, pt.x + 2.2f, pt.y + 2.2f, true));
+        g.fillEllipse (Rectangle<float> (4.0f, 4.0f).withCentre (pt));
+    }
+    g.setFont (KintsugiFonts::serif (17.0f).withExtraKerningFactor (0.34f));
+    g.setColour (brassLite.withAlpha (0.8f));
+    g.drawText ("FOCUS", Rectangle<float> (0.0f, 14.7f, (float) getWidth(), 22.0f), Justification::centred);
+    g.setColour (brassDeep);
+    g.drawText ("FOCUS", Rectangle<float> (0.0f, 14.0f, (float) getWidth(), 22.0f), Justification::centred);
+    g.setColour (brassDeep.withAlpha (0.75f));
+    g.fillRect (14.0f, 40.0f, (float) getWidth() - 28.0f, 0.9f);
+    const char* labels[6] = { "THROW", "ECHO", "SWELL", "DOUBLE", "HARMONY", "SHIFT" };
+    for (int k = 0; k < 6; ++k)
+    {
+        const auto r = keyBounds (k);
+        const bool on = (onMask >> k & 1) != 0;
+        const auto cap = r.reduced (1.0f).translated (on ? 0.0f : -0.5f, on ? 1.4f : 0.0f);
+        g.setColour (Colours::black.withAlpha (0.55f));
+        g.fillRoundedRectangle (r.expanded (1.6f), 5.0f);
+        if (! on) { g.setColour (Colours::black.withAlpha (0.45f)); g.fillRoundedRectangle (cap.translated (1.2f, 1.8f), 4.0f); }
+        const float glow = on ? 1.0f : 0.0f;
+        if (on)
+        {
+            const auto c = cap.getCentre();
+            g.setGradientFill (ColourGradient (Colour (0xffffa040).withAlpha (0.62f), c.x, c.y, Colour (0xffffa040).withAlpha (0.0f), c.x + r.getWidth() * 0.8f, c.y, true));
+            g.fillEllipse (cap.expanded (r.getWidth() * 0.4f, r.getHeight() * 0.6f));
+        }
+        g.setGradientFill (ColourGradient (Colour (0xff8f3126).interpolatedWith (Colour (0xffffb257), glow * 0.9f), cap.getX(), cap.getY(),
+                                           Colour (0xff2a0705).interpolatedWith (Colour (0xffc4561a), glow * 0.9f), cap.getRight(), cap.getBottom(), false));
+        g.fillRoundedRectangle (cap, 4.0f);
+        g.setColour (Colours::white.withAlpha (0.20f * (1.0f - 0.5f * glow)));
+        g.fillRoundedRectangle (Rectangle<float> (cap.getWidth() - 8.0f, 3.0f).withPosition (cap.getX() + 4.0f, cap.getY() + 2.0f), 1.5f);
+        g.setColour (Colours::black.withAlpha (0.8f));
+        g.drawRoundedRectangle (cap, 4.0f, 0.9f);
+        if (k == edit)   // the effect whose settings the knobs show: a cream ring round its key
+        {
+            g.setColour (Colour (0xfff8f2de).withAlpha (0.95f));
+            g.drawRoundedRectangle (r.expanded (3.2f), 6.0f, 1.6f);
+        }
+        g.setFont (KintsugiFonts::serif (10.5f, true).withExtraKerningFactor (0.12f));
+        g.setColour (Colours::black.withAlpha (0.4f));
+        g.drawText (labels[k], cap.translated (0.5f, 0.7f), Justification::centred);
+        g.setColour (on ? Colour (0xff2a1208) : Colour (0xffeae1c4).withAlpha (0.92f));
+        g.drawText (labels[k], cap, Justification::centred);
+    }
+}
+
 void IRWindow::paint (juce::Graphics& g)
 {
     using namespace juce;
@@ -2809,6 +3049,7 @@ ArtifactsEditor::ArtifactsEditor (ArtifactsProcessor& p)
     {
         Layout::colW = 94; Layout::sectionGap = 36; Layout::outColW = 130;
         Layout::W = Layout::marginX * 2 + 3 * Layout::colW + (90 + 36) + (2 * Layout::colW + 16 + 130 + 18) + 2 * Layout::outColW + 2 * Layout::sectionGap;
+        Layout::H = 700;   // room under the knobs for the Words window
     }
     else if (mockVariant == 4)
     {
@@ -2970,16 +3211,36 @@ ArtifactsEditor::ArtifactsEditor (ArtifactsProcessor& p)
         consoleSwitch.setVisible (false); tapeSwitch.setVisible (false);
         peakLamp.setRed (true); peakLamp.setTooltip ("Output peak");
         plateArea.addAndMakeVisible (peakLamp);
-        cDrive->name = "Size"; hum->name = "Damping"; glue->name = "Pre-delay"; tone->name = "Level"; wow->name = "Width";
-        vDrive->name = "Decay"; bias->name = "Damping"; sag->name = "Pre-delay"; vMix->name = "Level";
-        bias->marks.clear(); tone->marks.clear();
-        vType->name = "Type"; vType->stepLabels = { "ROOM", "HALL", "PLATE" };
+        // Plate: the vocal plate. Words: what is done to the selected words
+        for (auto* k : { drift, flutter, wear }) { k->slider.setVisible (true); k->readout.setVisible (true); k->printed = true; }
+        drift->slider.getProperties().remove ("kintsugi");   // the mended cap belongs to Kintsugi
+        cDrive->name = "Decay"; hum->name = "Damping"; glue->name = "Pre-delay"; wow->name = "Width";
+        tone->name = "Low Cut"; drift->name = "High Cut"; flutter->name = "Duck";
+        // the Words knobs show the settings of the effect being edited (mock-up pages: Echo, or Throw with DUALITY_PAGE=throw)
+        throwPage = juce::SystemStats::getEnvironmentVariable ("DUALITY_PAGE", "") == "throw";
+        applyKeys.edit = throwPage ? 0 : 1;
+        if (throwPage)
+        {
+            vDrive->name = "Decay"; bias->name = "Pre-delay"; wear->name = "Size"; sag->name = "Tone"; vMix->name = "Amount";
+            vType->slider.setVisible (false); vType->readout.setVisible (false); vType->printed = false;
+            noiseSwitch.setTooltip ("Freeze: the throw's tail hangs on");
+        }
+        else
+        {
+        vDrive->name = "Time"; bias->name = "Feedback"; sag->name = "Tone"; vMix->name = "Amount";
+        wear->slider.setVisible (false); wear->readout.setVisible (false); wear->printed = false;
+        }
+        plateArea.addAndMakeVisible (noiseLamp); plateArea.addAndMakeVisible (noiseSwitch);
+        if (! throwPage) noiseSwitch.setTooltip ("Sync: echo time in note values from the song's tempo");
+        for (auto* k : { bias, tone, drift, flutter, wear, sag, vMix, hum, glue }) k->marks.clear();
+        vType->name = "Type"; vType->stepLabels = { "TAPE", "DIGITAL", "PING-PONG" };
+        irWindow.setVisible (false);
+        plateArea.addAndMakeVisible (wordsWindow);
+        plateArea.addAndMakeVisible (applyKeys);
+        wordsWindow.setTooltip ("The vocal's words: select them like text, then apply an effect");
         iron->name = "Perspective"; iron->stepLabels = { "OBJECT", "KENSHO", "SUBJECT" };
         iron->slider.getProperties().set ("brassPointer", true);
-        irWindow.name = "";
-        irWindow.setTooltip ("Click to choose an impulse response");
-        irWindow.onClick = [this] { chooseIR(); };
-        plateArea.addAndMakeVisible (irWindow);
+
     }
     if (mockVariant == 1)
     {
@@ -3145,10 +3406,11 @@ juce::String ArtifactsEditor::rid (const juce::String& slot) const
     }
     struct Map { const char* slot; const char* duality; const char* anemoia; };
     static const Map map[] = {
-        { "cdrive",   "rsize",       "time"      }, { "xfmr",    "perspective", "division" }, { "vtype", "rtype",  "feel"   },
-        { "hum",      "rdamp",       "feedback"  }, { "tone",    "rlevel",      "tone"     }, { "wow",   "width",  "width"  },
-        { "glue",     "rpre",        "shimmer"   }, { "vdrive",  "idecay",      ""         }, { "bias",  "idamp",  "texture" },
-        { "sag",      "ipre",        "blur"      }, { "vmix",    "ilevel",      "bloom"    }, { "speed", "",       "pattern" },
+        { "cdrive",   "pdecay",      "time"      }, { "xfmr",    "perspective", "division" }, { "vtype", "",       "feel"   },
+        { "hum",      "pdamp",       "feedback"  }, { "tone",    "plowcut",     "tone"     }, { "wow",   "width",  "width"  },
+        { "glue",     "ppre",        "shimmer"   }, { "vdrive",  "",            ""         }, { "bias",  "",       "texture" },
+        { "sag",      "",            "blur"      }, { "vmix",    "",            "bloom"    }, { "speed", "",       "pattern" },
+        { "drift",    "phighcut",    ""          }, { "flutter", "pduck",       ""         },
         { "tsat",     "",            "nostalgia" }, { "wear",    "",            "pitch"    }, { "consoleon", "", "echoon"  },
         { "tapeon",   "",            "memon"     }, { "valveon", "",            "sync"     },
     };
@@ -3286,10 +3548,11 @@ void ArtifactsEditor::timerCallback()
     {
         const int persp = juce::roundToInt (paramValue ("xfmr", 1.0f));   // 0 Object (algorithmic), 1 Kensho (both), 2 Subject (impulse response)
         cOn = persp <= 1; tOn = persp >= 1;
-        for (auto* k : { cDrive, hum, glue, vType, tone }) k->slider.setEnabled (cOn);
-        for (auto* k : { vDrive, bias, sag, vMix }) k->slider.setEnabled (tOn);
+        for (auto* k : { cDrive, hum, glue, tone, drift, flutter }) k->slider.setEnabled (cOn);
+        for (auto* k : { vDrive, bias, sag, vType, vMix, wear }) k->slider.setEnabled (tOn && hasParam (k->slider.getName()));   // the words' settings arrive with ARA
         consoleLamp.setGlow (cOn ? 1.0f : 0.0f);
         tapeLamp.setGlow (tOn ? 1.0f : 0.0f);
+        noiseSwitch.setOn (false); noiseLamp.setGlow (0.0f);   // Sync / Freeze: they arrive with the words
     }
     else if (mockVariant == 4)   // Anemoia: Echos and Memories each have their own in/out switch; Sync picks the time source
     {
@@ -3338,7 +3601,7 @@ void ArtifactsEditor::timerCallback()
     channelDrum.tick();
     speedDrum.tick();
 
-    if (mockVariant == 3)   // the impulse response window follows what is loaded
+    if (false)   // the impulse response window follows what is loaded
     {
         const auto info = proc.getIRInfo();
         if (info.loaded && (irWindow.name != info.name || irWindow.length != info.length || irWindow.peaks.size() != info.peaks.size()))
@@ -3586,9 +3849,9 @@ void ArtifactsEditor::layoutPanel()
     if (mockVariant == 3)
     {
         auto shift = [] (Knob& k, int dx, int dy) { k.slider.setBounds (k.slider.getBounds().translated (dx, dy)); k.readout.setBounds (k.readout.getBounds().translated (dx, dy)); };
-        const auto rev = addSection ("Reverbs", 3, colW, &consoleLamp);
+        const auto rev = addSection ("Plate", 3, colW, &consoleLamp);
         placeKnob (*cDrive, 0, 0, rev); placeKnob (*hum, 1, 0, rev); placeKnob (*glue, 2, 0, rev);
-        placeKnob (*vType, 0.5f, 1, rev); placeKnob (*tone, 1.5f, 1, rev);
+        placeKnob (*tone, 0, 1, rev); placeKnob (*drift, 1, 1, rev); placeKnob (*flutter, 2, 1, rev);
         {
             const juce::Point<int> pc { x, row1Y };
             placeKnob (*iron, 0, 0, pc, 90);
@@ -3600,17 +3863,27 @@ void ArtifactsEditor::layoutPanel()
             }
             x += 90 + sectionGap;
         }
-        const int irW = 130, irTotal = 2 * colW + 16 + irW + 18;
-        const auto ir = addSection ("Impulse Responses", 1, irTotal, &tapeLamp);
-        placeKnob (*vDrive, 0, 0, ir); placeKnob (*bias, 1, 0, ir);
-        placeKnob (*sag, 0, 1, ir); placeKnob (*vMix, 1, 1, ir);
-        irWindow.setBounds (ir.x + 2 * colW + 22, row1Y + knobSize / 2 + rowH / 2 - 63, irW - 12, 126);
+        const int wcw = (2 * colW + 16 + 130 + 18) / 3;
+        const auto ir = addSection (juce::String::fromUTF8 (throwPage ? "Words \xc2\xb7 Throw" : "Words \xc2\xb7 Echo"), 3, wcw, &tapeLamp);
+        placeKnob (*vDrive, 1, 0, ir, wcw); placeKnob (*bias, 2, 0, ir, wcw);
+        placeKnob (throwPage ? *wear : *vType, 0, 1, ir, wcw); placeKnob (*sag, 1, 1, ir, wcw); placeKnob (*vMix, 2, 1, ir, wcw);
+        {   // SYNC: lamp and lever, beside Time
+            const int sx = ir.x + wcw / 2, sy = row1Y + knobSize / 2 - 4;
+            noiseLamp.setBounds (sx - 24 - 6 - 4, sy - 24, 48, 48);
+            noiseSwitch.setBounds (sx + 8, sy - 17, 22, 34);
+        }
+        {   // under the knobs, the whole width: the Apply keys, then the Words window
+            const int top = row1Y + 2 * rowH + 22, h = ApplyKeys::panelH;   // centred between the fader's label and the maker's name
+            applyKeys.setBounds (marginX + 6, top, ApplyKeys::panelW, h);
+            const int wx = applyKeys.getRight() + 34;
+            wordsWindow.setBounds (wx, top + 8, W - marginX - 10 - wx, h - 16);
+        }
         const auto out = addSection ("Output", 2, outColW, &peakLamp);
         placeKnob (*mix, 0, 0, out, outColW);
         placeKnob (*wow, 0, 1, out, outColW);
         {
             const int cx = out.x + 2 * outColW - 38;
-            const int top = row1Y - 6, bottom = row1Y + 2 * rowH + 22;
+            const int top = row1Y - 6, bottom = row1Y + 2 * rowH - 26;   // shorter: clear of the Words window
             output->slider.setBounds (cx - 28, top, 56, bottom - top);
             output->readout.setBounds (cx - colW / 2, bottom + 17, colW, 15);
         }
@@ -4320,6 +4593,12 @@ void ArtifactsEditor::renderPlate()
             pg.drawText ("IPS", Rectangle<int> (wb.getRight() + 3, wb.getY(), 26, wb.getHeight()), Justification::centredLeft);
         }
 
+        if (mockVariant == 3)
+        {
+            const auto nb = noiseSwitch.getBounds();
+            pg.setFont (KintsugiFonts::serif (13.0f).withExtraKerningFactor (0.2f));
+            pg.drawText (throwPage ? "FREEZE" : "SYNC", Rectangle<int> (noiseLamp.getBounds().getCentreX() - 60, nb.getBottom() + 4, 160, 18), Justification::centred, false);
+        }
         if (mockVariant == 5)
         {
             // EQ IN under its lever and lamp, and SOLO under its lever
@@ -4494,7 +4773,7 @@ void ArtifactsEditor::renderPlate()
         }
 
         if (mockVariant == 3)
-            Repair::plaque (g, irWindow.getBounds().toFloat().expanded (9.0f), "", 41);
+            Repair::plaque (g, wordsWindow.getBounds().toFloat().expanded (9.0f), "", 41);
         // the repairer's mark, punched into the large brass corner
         // the repairer's mark: One Bright Pearl
         if (mockVariant < 2)

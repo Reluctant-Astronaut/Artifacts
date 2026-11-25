@@ -200,11 +200,11 @@ static std::vector<Scenario> scenarios()
     }
     else if (isReverb())
     {
-        s.push_back ({ "kensho", [] (Rig& r) { r.set ("perspective", 1); r.norm ("mix", 1.0f); } });
-        s.push_back ({ "object-hall", [] (Rig& r) { r.set ("perspective", 0); r.set ("rtype", 1); r.norm ("mix", 1.0f); } });
-        s.push_back ({ "object-plate", [] (Rig& r) { r.set ("perspective", 0); r.set ("rtype", 2); r.norm ("mix", 1.0f); } });
-        s.push_back ({ "object-room", [] (Rig& r) { r.set ("perspective", 0); r.set ("rtype", 0); r.norm ("mix", 1.0f); } });
-        s.push_back ({ "subject", [] (Rig& r) { r.set ("perspective", 2); r.norm ("mix", 1.0f); } });
+        s.push_back ({ "plate-default", [] (Rig& r) { r.set ("perspective", 0); r.norm ("mix", 1.0f); } });
+        s.push_back ({ "plate-short", [] (Rig& r) { r.set ("perspective", 0); r.set ("pdecay", 0.8f); r.norm ("mix", 1.0f); } });
+        s.push_back ({ "plate-long", [] (Rig& r) { r.set ("perspective", 1); r.set ("pdecay", 5.0f); r.norm ("mix", 1.0f); } });
+        s.push_back ({ "plate-abbey", [] (Rig& r) { r.set ("perspective", 0); r.set ("plowcut", 600.0f); r.set ("phighcut", 10000.0f); r.norm ("mix", 1.0f); } });
+        s.push_back ({ "plate-dark", [] (Rig& r) { r.set ("perspective", 0); r.norm ("pdamp", 0.9f); r.norm ("mix", 1.0f); } });
     }
     else
     {
@@ -456,7 +456,7 @@ static void testTone (double sr)
             {
                 // wet only: a real space loses highs; make sure that it doesn't gain them, nor leave the lows muddy
                 const double hf = (delta[6] + delta[7]) * 0.5 - (delta[2] + delta[3]) * 0.5;
-                row ("tone", tag + "_wet_brightness_vs_mid_dB", hf, hf <= 1.0 ? "PASS" : hf <= 4.0 ? "WARN" : "FAIL");
+                row ("tone", tag + "_wet_brightness_vs_mid_dB", hf, tag.contains ("abbey") ? "INFO" /* its low cut at 600 Hz takes the mids away on purpose */ : hf <= 1.0 ? "PASS" : hf <= 4.0 ? "WARN" : "FAIL");
                 const double mud = (delta[0] + delta[1]) * 0.5 - (delta[3] + delta[4]) * 0.5;
                 row ("tone", tag + "_wet_low_buildup_dB", mud, mud <= 4.0 ? "PASS" : mud <= 7.0 ? "WARN" : "FAIL");
                 if (sc.name != "echo" ) row ("level", tag + "_wet_level_vs_dry_dB", total, "INFO");
@@ -798,6 +798,12 @@ static void renderEditor (const File& png, bool playAudio, const String& skin = 
             p->processBlock (blk, m);
         }
     }
+    for (auto& kv : extra)   // id=value: a parameter set before the window opens (in its own units)
+        if (kv.contains ("=") && ! kv.startsWith ("size="))
+            for (auto* prm : p->getParameters())
+                if (auto* rp = dynamic_cast<RangedAudioParameter*> (prm))
+                    if (rp->getParameterID() == kv.upToFirstOccurrenceOf ("=", false, false))
+                        rp->setValueNotifyingHost (rp->convertTo0to1 (kv.fromFirstOccurrenceOf ("=", false, false).getFloatValue()));
     std::unique_ptr<AudioProcessorEditor> ed (p->createEditor());
     ed->setVisible (true);
     for (auto& kv : extra)   // size=0.7: the window resized to 70 %, as a user would drag it

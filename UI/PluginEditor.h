@@ -109,6 +109,32 @@ public:
     void paint (juce::Graphics&) override;
 };
 
+// Duality: the Words window. The vocal's transcribed lyrics laid out along its waveform; words are selected like text
+// and carry their effects (throw, echo, swell, double, harmony, shift), printed above them and drawn into the waveform.
+class WordsWindow : public juce::Component, public juce::SettableTooltipClient
+{
+public:
+    struct Word { juce::String text; float t0, t1; juce::String tag; bool selected = false; };
+    std::vector<Word> words;
+    float length = 9.6f, playhead = 6.45f;
+    juce::String source { juce::String::fromUTF8 ("LEAD VOX  \xc2\xb7  TAKE 3") }, status { juce::String::fromUTF8 ("DEMO  \xc2\xb7  THE WORDS ARRIVE WITH ARA") };
+    WordsWindow();
+    void paint (juce::Graphics&) override;
+};
+
+// Duality: the Apply plate, six keys that put an effect on the selected words
+class ApplyKeys : public juce::Component, public juce::SettableTooltipClient
+{
+public:
+    int onMask = 0b10011;   // the effects on the selected words (bit 0 Throw, 1 Echo, 2 Swell, 3 Double, 4 Harmony, 5 Shift): they stack
+    int edit = 1;           // the effect whose settings the Words knobs show
+    std::function<void (int)> onKey;
+    void paint (juce::Graphics&) override;
+    void mouseDown (const juce::MouseEvent& e) override;
+    static constexpr int panelW = 196, panelH = 172;
+    juce::Rectangle<float> keyBounds (int k) const;
+};
+
 // Equanimity: which bank of settings is in use. L/R mode has one (0); M/S mode has Mid (1) and Side (2), and the panel
 // edits one of them, or both together (link).
 inline int eqBankOf (juce::AudioProcessorValueTreeState& a)
@@ -225,6 +251,9 @@ private:
     DrumWindow speedDrum { { juce::String::fromUTF8 ("7\xc2\xbd"), "15", "30" } };
 
     IRWindow irWindow;
+    WordsWindow wordsWindow;
+    bool throwPage = false;   // Duality mock-up: which Words page is shown
+    ApplyKeys applyKeys;
     DrumWindow dTime { juce::StringArray { "375 MS" } }, dDiv { juce::StringArray { "1/8" } }, dFeel { juce::StringArray { "DOTTED" } },
                dPat { juce::StringArray { "SCATTER" } }, dPitch { juce::StringArray { "+7 ST" } };
     ToggleSwitch meterSwitch;

@@ -5,93 +5,33 @@ using namespace juce;
 
 namespace
 {
-    constexpr double maxIRSeconds = 12.0;
-    constexpr int numBuilt = 3;
-    const char* const builtNames[numBuilt] = { "Stone Room", "Chapel", "Deep Cave" };
-
     String pctText (float v, int) { return String (roundToInt (v * 100.0f)) + " %"; }
-
-    // A made-up room, as an impulse response: early reflections, then a diffuse tail whose highs die
-    // faster than its lows, the way air and soft surfaces do it. Different noise in each ear.
-    AudioBuffer<float> makeBuiltIn (int kind, double rate)
-    {
-        const double rt60[numBuilt]   = { 0.9, 2.8, 6.5 };
-        const double tone0[numBuilt]  = { 9000.0, 7000.0, 4500.0 };    // brightness of the tail at the start
-        const double toneEnd[numBuilt] = { 2500.0, 1400.0, 700.0 };    // and where it ends up
-        const double predelay[numBuilt] = { 0.004, 0.009, 0.016 };
-        const int n = (int) (rt60[kind] * 1.15 * rate);
-        AudioBuffer<float> ir (2, n);
-        ir.clear();
-        for (int ch = 0; ch < 2; ++ch)
-        {
-            Random rng (1234 + kind * 77 + ch * 991);
-            auto* x = ir.getWritePointer (ch);
-            double lp = 0.0, lp2 = 0.0;
-            const int start = (int) (predelay[kind] * rate);
-            for (int i = start; i < n; ++i)
-            {
-                const double t = (double) (i - start) / rate;
-                const double env = std::pow (10.0, -3.0 * t / rt60[kind]);
-                const double fc = tone0[kind] * std::pow (toneEnd[kind] / tone0[kind], std::min (1.0, t / (rt60[kind] * 0.8)));
-                const double a = 1.0 - std::exp (-MathConstants<double>::twoPi * fc / rate);
-                const double noise = rng.nextDouble() * 2.0 - 1.0;
-                lp += a * (noise - lp);
-                lp2 += a * (lp - lp2);   // two poles: a smoother, less hissy tail
-                const double fadeIn = std::min (1.0, t / (0.004 + 0.012 * kind));   // density builds up
-                x[i] = (float) (lp2 * env * fadeIn * 3.0);
-            }
-            // early reflections: a handful of discrete taps in the first 80 ms, alternating polarity
-            Random er (55 + kind * 13 + ch * 7);
-            for (int k = 0; k < 14; ++k)
-            {
-                const double ms = 3.0 + (0.012 + 0.014 * kind) * 1000.0 * ((double) k / 14.0) * (1.0 + er.nextDouble() * 0.4);
-                const int pos = start + (int) (ms * 0.001 * rate);
-                if (pos < n - 8)
-                    x[pos] += (float) ((k % 2 ? -1.0 : 1.0) * 0.5 * std::pow (0.82, k) * (0.7 + 0.6 * er.nextDouble()));
-            }
-        }
-        // a high-pass at 35 Hz so no sub rumble rides in with the tail
-        for (int ch = 0; ch < 2; ++ch)
-        {
-            auto* x = ir.getWritePointer (ch);
-            double lp = 0.0;
-            const double a = 1.0 - std::exp (-MathConstants<double>::twoPi * 35.0 / rate);
-            for (int i = 0; i < n; ++i) { lp += a * (x[i] - lp); x[i] -= (float) lp; }
-        }
-        return ir;
-    }
-
-    IRInfo describe (const AudioBuffer<float>& ir, double rate, const String& name, bool mono)
-    {
-        IRInfo info;
-        info.loaded = true;
-        info.name = name;
-        info.length = String (ir.getNumSamples() / rate, 2) + " s";
-        info.rate = String (rate / 1000.0, rate == std::floor (rate / 1000.0) * 1000.0 ? 0 : 1) + " kHz";
-        info.format = mono ? "MONO" : "STEREO";
-        const int bins = 48, n = ir.getNumSamples();
-        info.peaks.assign ((size_t) bins, 0.0f);
-        const float peak = std::max (1.0e-9f, std::max (ir.getMagnitude (0, 0, n), ir.getMagnitude (1, 0, n)));
-        for (int b = 0; b < bins; ++b)
-        {
-            const int s0 = (int) ((double) b / bins * n), s1 = std::max (s0 + 1, (int) ((double) (b + 1) / bins * n));
-            const float m = std::max (ir.getMagnitude (0, s0, s1 - s0), ir.getMagnitude (1, s0, s1 - s0)) / peak;
-            info.peaks[(size_t) b] = jlimit (0.0f, 1.0f, (Decibels::gainToDecibels (m, -80.0f) + 60.0f) / 60.0f);
-        }
-        return info;
-    }
+    String hzText (float v, int) { return v >= 1000.0f ? String (v / 1000.0f, v >= 10000.0f ? 1 : 2) + " kHz" : String (roundToInt (v)) + " Hz"; }
 
     struct Program { const char* name; std::vector<std::pair<const char*, float>> values; };
     const std::vector<Program>& programs()
     {
         static const std::vector<Program> list {
             { "Duality", {} },
-            { "Object: Plate", { { "perspective", 0.0f }, { "rtype", 2.0f }, { "rsize", 0.45f }, { "rdamp", 0.35f }, { "rlevel", 0.7f } } },
-            { "Object: Hall", { { "perspective", 0.0f }, { "rtype", 1.0f }, { "rsize", 0.6f }, { "rdamp", 0.45f }, { "rlevel", 0.7f } } },
-            { "Subject: Chapel", { { "perspective", 2.0f }, { "idecay", 1.0f }, { "idamp", 0.2f }, { "ilevel", 0.7f } } },
-            { "Kensho", { { "perspective", 1.0f }, { "rlevel", 0.45f }, { "ilevel", 0.55f }, { "width", 1.0f } } },
+            { "Vocal Plate", { { "pdecay", 2.2f }, { "pdamp", 0.35f }, { "ppre", 25.0f } } },
+            { "Abbey Road Plate", { { "pdecay", 2.4f }, { "pdamp", 0.3f }, { "ppre", 30.0f }, { "plowcut", 600.0f }, { "phighcut", 10000.0f } } },
+            { "Short Bright Plate", { { "pdecay", 1.1f }, { "pdamp", 0.15f }, { "ppre", 10.0f }, { "plowcut", 200.0f } } },
+            { "Ballad Plate", { { "pdecay", 3.8f }, { "pdamp", 0.45f }, { "ppre", 60.0f }, { "pduck", 0.4f } } },
+            { "Dark Ducked Plate", { { "pdecay", 3.0f }, { "pdamp", 0.75f }, { "ppre", 40.0f }, { "pduck", 0.6f }, { "phighcut", 7000.0f } } },
         };
         return list;
+    }
+
+    // two-pole filters from the RBJ cookbook
+    template <typename BQ> void designLP (BQ& f, double sr, double fc, double q)
+    {
+        const double w = MathConstants<double>::twoPi * fc / sr, c = std::cos (w), al = std::sin (w) / (2.0 * q), a0 = 1.0 + al;
+        f.b0 = (1.0 - c) * 0.5 / a0; f.b1 = (1.0 - c) / a0; f.b2 = f.b0; f.a1 = -2.0 * c / a0; f.a2 = (1.0 - al) / a0;
+    }
+    template <typename BQ> void designHP (BQ& f, double sr, double fc, double q)
+    {
+        const double w = MathConstants<double>::twoPi * fc / sr, c = std::cos (w), al = std::sin (w) / (2.0 * q), a0 = 1.0 + al;
+        f.b0 = (1.0 + c) * 0.5 / a0; f.b1 = -(1.0 + c) / a0; f.b2 = f.b0; f.a1 = -2.0 * c / a0; f.a2 = (1.0 - al) / a0;
     }
 }
 
@@ -101,36 +41,27 @@ AudioProcessorValueTreeState::ParameterLayout DualityProcessor::createLayout()
     std::vector<std::unique_ptr<RangedAudioParameter>> p;
     auto pct = AudioParameterFloatAttributes().withStringFromValueFunction (pctText);
     auto unit = NormalisableRange<float> (0.0f, 1.0f, 0.001f);
-    auto addPct = [&] (const char* id, const char* name, float def)
-    {
-        p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { id, 1 }, name, unit, def, pct));
-    };
-    auto msParam = [&] (const char* id, const char* name, float def)
-    {
-        p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { id, 1 }, name, NormalisableRange<float> (0.0f, 200.0f, 0.1f, 0.5f), def,
-            AudioParameterFloatAttributes().withLabel ("ms").withStringFromValueFunction ([] (float v, int) { return String (v, 0) + " ms"; })));
-    };
+    auto skewed = [] (float lo, float hi, float centre) { NormalisableRange<float> r (lo, hi, 0.0f); r.setSkewForCentre (centre); return r; };
 
-    // Object: the algorithmic reverb
-    addPct ("rsize", "Reverb Size", 0.50f);
-    addPct ("rdamp", "Reverb Damping", 0.40f);
-    msParam ("rpre", "Reverb Pre-delay", 12.0f);
-    p.push_back (std::make_unique<AudioParameterChoice> (ParameterID { "rtype", 1 }, "Reverb Type", StringArray { "Room", "Hall", "Plate" }, 1));
-    addPct ("rlevel", "Reverb Level", 0.50f);
+    // Plate (Object)
+    p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "pdecay", 2 }, "Plate Decay", skewed (0.3f, 8.0f, 2.0f), 2.2f,
+        AudioParameterFloatAttributes().withLabel ("s").withStringFromValueFunction ([] (float v, int) { return String (v, v < 10.0f ? 2 : 1) + " s"; })));
+    p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "pdamp", 2 }, "Plate Damping", unit, 0.35f, pct));
+    p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "ppre", 2 }, "Plate Pre-delay", skewed (0.0f, 250.0f, 40.0f), 20.0f,
+        AudioParameterFloatAttributes().withLabel ("ms").withStringFromValueFunction ([] (float v, int) { return String (roundToInt (v)) + " ms"; })));
+    p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "plowcut", 2 }, "Plate Low Cut", skewed (20.0f, 1000.0f, 150.0f), 100.0f,
+        AudioParameterFloatAttributes().withLabel ("Hz").withStringFromValueFunction (hzText)));
+    p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "phighcut", 2 }, "Plate High Cut", skewed (2000.0f, 20000.0f, 8000.0f), 12000.0f,
+        AudioParameterFloatAttributes().withLabel ("Hz").withStringFromValueFunction (hzText)));
+    p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "pduck", 2 }, "Plate Duck", unit, 0.0f, pct));
 
     // The point between the two
     p.push_back (std::make_unique<AudioParameterChoice> (ParameterID { "perspective", 1 }, "Perspective", StringArray { "Object", "Kensho", "Subject" }, 1));
 
-    // Subject: the impulse response
-    addPct ("idecay", "IR Decay", 1.0f);
-    addPct ("idamp", "IR Damping", 0.20f);
-    msParam ("ipre", "IR Pre-delay", 0.0f);
-    addPct ("ilevel", "IR Level", 0.50f);
-
     // Output
     p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "width", 1 }, "Width", NormalisableRange<float> (0.0f, 2.0f, 0.01f), 1.0f,
         AudioParameterFloatAttributes().withStringFromValueFunction ([] (float v, int) { return String (roundToInt (v * 100.0f)) + " %"; })));
-    addPct ("mix", "Mix", 0.30f);
+    p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "mix", 1 }, "Mix", unit, 0.25f, pct));
     p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "output", 1 }, "Output",
         NormalisableRange<float> (-24.0f, 12.0f, 0.1f), 0.0f,
         AudioParameterFloatAttributes().withLabel ("dB").withStringFromValueFunction ([] (float v, int) { return String (v, 1) + " dB"; })));
@@ -144,10 +75,8 @@ DualityProcessor::DualityProcessor()
                           createLayout(), "Duality")
 {
     auto get = [this] (const char* id) { return apvts.getRawParameterValue (id); };
-    pSize = get ("rsize"); pDamp = get ("rdamp"); pPre = get ("rpre"); pType = get ("rtype"); pLevel = get ("rlevel");
-    pPersp = get ("perspective"); pIDecay = get ("idecay"); pIDamp = get ("idamp"); pIPre = get ("ipre"); pILevel = get ("ilevel");
-    pWidth = get ("width"); pMix = get ("mix"); pOutput = get ("output");
-    loadBuiltInIR (2 - 1);   // Chapel to begin with
+    pDecay = get ("pdecay"); pDamp = get ("pdamp"); pPre = get ("ppre"); pLow = get ("plowcut"); pHigh = get ("phighcut");
+    pDuck = get ("pduck"); pPersp = get ("perspective"); pWidth = get ("width"); pMix = get ("mix"); pOutput = get ("output");
 }
 
 bool DualityProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
@@ -156,180 +85,42 @@ bool DualityProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
     return out == AudioChannelSet::stereo() && (in == AudioChannelSet::stereo() || in == AudioChannelSet::mono());
 }
 
-int DualityProcessor::numBuiltInIRs() { return numBuilt; }
-String DualityProcessor::builtInIRName (int i) { return builtNames[jlimit (0, numBuilt - 1, i)]; }
-
 //==============================================================================
 void DualityProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 {
     sr = sampleRate;
-    maxBlock = samplesPerBlock;
-    dsp::ProcessSpec spec { sampleRate, (uint32) samplesPerBlock, 2 };
-    for (auto* d : { &preRev, &preIR })
-    {
-        d->setMaximumDelayInSamples ((int) std::ceil (0.21 * sampleRate) + 8);
-        d->prepare (spec);
-    }
+    dsp::ProcessSpec spec { sampleRate, (uint32) samplesPerBlock, 1 };
+    preDelay.setMaximumDelayInSamples ((int) std::ceil (0.26 * sampleRate) + 8);
+    preDelay.prepare (spec);
     plate.prepare (sampleRate);
-    hall.prepare (sampleRate);
-    hall.setOutputGain (1.8f);
-    conv.prepare (spec);
-    pushIRToEngine();
+    for (auto* f : { &hp[0], &hp[1], &lp[0], &lp[1] }) f->reset();
+    appliedLow = appliedHigh = -1.0f;
+    duckEnv = 0.0f; duckGain = 1.0f;
 
-    for (int c = 0; c < 2; ++c)
-    {
-        // a gentle high shelf on the wet bus: the top of a real space is always a little softer than the source
-        fuse[c].coefficients = dsp::IIR::Coefficients<float>::makeHighShelf (sampleRate, 7500.0, 0.6, Decibels::decibelsToGain (-1.5f));
-        fuse[c].reset();
-        air[c].coefficients = dsp::IIR::Coefficients<float>::makeHighPass (sampleRate, 30.0, 0.7);   // no sub-bass mud from the tails
-        air[c].reset();
-        const int k = (int) (sampleRate / 48000.0 * 100.0) / 100;
-        const int lens[2][2] = { { 241, 389 }, { 281, 433 } };
-        { const int rl[2][3] = { { 113, 181, 257 }, { 127, 199, 281 } };
-          for (int s = 0; s < 3; ++s) { roomDiff[c][s].setSize (std::max (2, (int) (rl[c][s] * sampleRate / 48000.0))); roomDiff[c][s].g = 0.6f; } }
-        for (int s = 0; s < 2; ++s) { blend[c][s].setSize (std::max (2, (int) (lens[c][s] * sampleRate / 48000.0))); blend[c][s].g = 0.42f; }
-        juce::ignoreUnused (k);
-    }
-
-    for (auto* s : { &sSize, &sDamp, &sLevel, &sILevel, &sMix, &sIDecay, &sIDamp }) s->reset (sampleRate, 0.05);
-    sPre.reset (sampleRate, 0.08); sIPre.reset (sampleRate, 0.08);
-    sWidth.reset (sampleRate, 0.05); sOut.reset (sampleRate, 0.03);
-    gAlg.reset (sampleRate, 0.08); gIR.reset (sampleRate, 0.08);
-    sSize.setCurrentAndTargetValue (pSize->load()); sDamp.setCurrentAndTargetValue (pDamp->load());
-    sPre.setCurrentAndTargetValue (pPre->load() * 0.001f * (float) sr); sIPre.setCurrentAndTargetValue (pIPre->load() * 0.001f * (float) sr);
-    sLevel.setCurrentAndTargetValue (pLevel->load()); sILevel.setCurrentAndTargetValue (pILevel->load());
+    sPre.reset (sampleRate, 0.08); sWidth.reset (sampleRate, 0.05); sMix.reset (sampleRate, 0.05);
+    sOut.reset (sampleRate, 0.03); gPlate.reset (sampleRate, 0.08); sLow.reset (sampleRate, 0.05); sHigh.reset (sampleRate, 0.05);
+    sPre.setCurrentAndTargetValue (pPre->load() * 0.001f * (float) sr);
     sWidth.setCurrentAndTargetValue (pWidth->load()); sMix.setCurrentAndTargetValue (pMix->load());
     sOut.setCurrentAndTargetValue (Decibels::decibelsToGain (pOutput->load()));
-    const int persp = roundToInt (pPersp->load());
-    gAlg.setCurrentAndTargetValue (persp <= 1 ? 1.0f : 0.0f);
-    gIR.setCurrentAndTargetValue (persp >= 1 ? 1.0f : 0.0f);
-    algRunning = persp <= 1; irRunning = persp >= 1;
+    sLow.setCurrentAndTargetValue (pLow->load()); sHigh.setCurrentAndTargetValue (pHigh->load());
+    const bool on = roundToInt (pPersp->load()) <= 1;
+    gPlate.setCurrentAndTargetValue (on ? 1.0f : 0.0f);
+    plateRunning = on;
+    updateFilters (pLow->load(), pHigh->load());
 
-    dryBuf.setSize (2, samplesPerBlock); algBuf.setSize (2, samplesPerBlock); irBuf.setSize (2, samplesPerBlock);
+    dryBuf.setSize (2, samplesPerBlock); wetBuf.setSize (2, samplesPerBlock);
+    send.assign ((size_t) samplesPerBlock, 0.0f);
     setLatencySamples (0);
 }
 
-//==============================================================================
-void DualityProcessor::shapeIR (AudioBuffer<float>& shaped, double rate, bool mono, float decay, float damp)
+void DualityProcessor::updateFilters (float lowCut, float highCut)
 {
-    const int n = shaped.getNumSamples();
-    if (mono)
-    {
-        // different short allpass chains on each side: same tone, different fine structure, so it is wide
-        const float msL[] = { 1.3f, 2.9f, 4.7f, 7.1f }, msR[] = { 1.7f, 3.4f, 5.3f, 6.2f };
-        for (int ch = 0; ch < 2; ++ch)
-            for (float ms : (ch == 0 ? msL : msR))
-            {
-                const int d = jmax (1, (int) (ms * 0.001 * rate));
-                std::vector<float> buf ((size_t) d, 0.0f);
-                int w = 0;
-                auto* x = shaped.getWritePointer (ch);
-                for (int i = 0; i < n; ++i)
-                {
-                    const float delayed = buf[(size_t) w];
-                    const float v = x[i] + 0.55f * delayed;
-                    buf[(size_t) w] = v;
-                    w = (w + 1) % d;
-                    x[i] = delayed - 0.55f * v;
-                }
-            }
-    }
-    if (decay < 0.995f)   // Decay: 100 % is the IR as recorded; below that its tail is shortened with a natural, faster fall
-    {
-        const double amount = 1.0 - decay;
-        const double dbPerSecond = 90.0 * std::pow (amount, 1.4);
-        for (int ch = 0; ch < 2; ++ch)
-        {
-            auto* x = shaped.getWritePointer (ch);
-            for (int i = 0; i < n; ++i)
-                x[i] *= (float) std::pow (10.0, -dbPerSecond * (i / rate) / 20.0);
-        }
-    }
-    if (damp > 0.01f)   // Damping: the tail darkens over time, like air absorption; the first reflections stay intact
-    {
-        const double fcEnd = 20000.0 * std::pow (0.12, (double) damp);
-        for (int ch = 0; ch < 2; ++ch)
-        {
-            auto* x = shaped.getWritePointer (ch);
-            double y1 = 0.0, y2 = 0.0;
-            for (int i = 0; i < n; ++i)
-            {
-                const double t = jmin (1.0, (i / rate) / 1.5);
-                const double fc = jmin (20000.0 * std::pow (fcEnd / 20000.0, t), rate * 0.45);
-                const double a = 1.0 - std::exp (-MathConstants<double>::twoPi * fc / rate);
-                y1 += a * (x[i] - y1);
-                y2 += a * (y1 - y2);   // two poles, so the roll-off is smooth rather than abrupt
-                const double ease = jmin (1.0, t / 0.02);
-                x[i] = (float) (x[i] * (1.0 - ease) + y2 * ease);
-            }
-        }
-    }
-}
-
-void DualityProcessor::pushIRToEngine()
-{
-    AudioBuffer<float> shaped;
-    double rate;
-    bool mono;
-    const float decay = pIDecay->load(), damp = pIDamp->load();
-    {
-        const ScopedLock sl (irLock);
-        if (irSource.getNumSamples() == 0) return;
-        shaped = irSource;
-        rate = irRate; mono = irMono;
-    }
-    shapeIR (shaped, rate, mono, decay, damp);
-    appliedIRDecay = decay; appliedIRDamp = damp;
-    conv.loadImpulseResponse (std::move (shaped), rate, dsp::Convolution::Stereo::yes, dsp::Convolution::Trim::yes, dsp::Convolution::Normalise::yes);
-}
-
-void DualityProcessor::loadBuiltInIR (int index)
-{
-    index = jlimit (0, numBuilt - 1, index);
-    auto ir = makeBuiltIn (index, 48000.0);
-    {
-        const ScopedLock sl (irLock);
-        irInfo = describe (ir, 48000.0, builtNames[index], false);
-        irSource = std::move (ir);
-        irRate = 48000.0; irMono = false;
-    }
-    apvts.state.setProperty ("irFile", "", nullptr);
-    apvts.state.setProperty ("irBuiltIn", index, nullptr);
-    pushIRToEngine();
-}
-
-String DualityProcessor::loadIR (const File& file)
-{
-    AudioFormatManager fm;
-    fm.registerBasicFormats();
-    std::unique_ptr<AudioFormatReader> reader (fm.createReaderFor (file));
-    if (reader == nullptr || reader->lengthInSamples < 16 || reader->sampleRate <= 0)
-        return "Couldn't read " + file.getFileName();
-    const double fileRate = reader->sampleRate;
-    const int len = (int) std::min<int64> (reader->lengthInSamples, (int64) (maxIRSeconds * fileRate));
-    const int chans = (int) jlimit (1u, 2u, reader->numChannels);
-    AudioBuffer<float> tmp (chans, len);
-    reader->read (&tmp, 0, len, 0, true, chans > 1);
-    AudioBuffer<float> ir (2, len);
-    ir.copyFrom (0, 0, tmp, 0, 0, len);
-    ir.copyFrom (1, 0, tmp, chans > 1 ? 1 : 0, 0, len);
-    if (ir.getMagnitude (0, len) <= 0.0f)
-        return file.getFileName() + " is silent";
-    {
-        const ScopedLock sl (irLock);
-        irInfo = describe (ir, fileRate, file.getFileNameWithoutExtension(), chans == 1);
-        irSource = std::move (ir);
-        irRate = fileRate; irMono = chans == 1;
-    }
-    apvts.state.setProperty ("irFile", file.getFullPathName(), nullptr);
-    pushIRToEngine();
-    return {};
-}
-
-IRInfo DualityProcessor::getIRInfo() const
-{
-    const ScopedLock sl (irLock);
-    return irInfo;
+    if (std::abs (lowCut - appliedLow) < 0.05f && std::abs (highCut - appliedHigh) < 1.0f) return;
+    appliedLow = lowCut; appliedHigh = highCut;
+    const double nyq = sr * 0.45;
+    // fourth-order Butterworth: two sections with Q 0.541 and 1.307
+    designHP (hp[0], sr, lowCut, 0.5412); designHP (hp[1], sr, lowCut, 1.3066);
+    designLP (lp[0], sr, jmin ((double) highCut, nyq), 0.5412); designLP (lp[1], sr, jmin ((double) highCut, nyq), 1.3066);
 }
 
 //==============================================================================
@@ -341,104 +132,75 @@ void DualityProcessor::processBlock (AudioBuffer<float>& buffer, MidiBuffer&)
         buffer.copyFrom (1, 0, buffer, 0, 0, n);
     if (buffer.getNumChannels() < 2 || n == 0)
         return;
-
-    // reshape the IR on the message-thread side of things when the knobs moved
-    const float dc = pIDecay->load(), dm = pIDamp->load();
-    if ((std::abs (dc - appliedIRDecay) > 0.004f || std::abs (dm - appliedIRDamp) > 0.004f) && ! irDirty.exchange (true))
-    {
-        pendingDecay = dc; pendingDamp = dm;
-        MessageManager::callAsync ([this] { irDirty = false; pushIRToEngine(); });
-    }
+    if (n > dryBuf.getNumSamples()) { dryBuf.setSize (2, n, false, false, true); wetBuf.setSize (2, n, false, false, true); send.resize ((size_t) n); }
 
     const int persp = roundToInt (pPersp->load());
-    const bool wantAlg = persp <= 1, wantIR = persp >= 1;
-    gAlg.setTargetValue (wantAlg ? (persp == 1 ? 0.72f : 1.0f) : 0.0f);
-    gIR.setTargetValue (wantIR ? (persp == 1 ? 0.72f : 1.0f) : 0.0f);   // Kensho: both come down a little, so they sum like one space
-    sSize.setTargetValue (pSize->load()); sDamp.setTargetValue (pDamp->load());
-    sPre.setTargetValue (pPre->load() * 0.001f * (float) sr); sIPre.setTargetValue (pIPre->load() * 0.001f * (float) sr);
-    sLevel.setTargetValue (pLevel->load()); sILevel.setTargetValue (pILevel->load());
+    const bool wantPlate = persp <= 1;   // Object and Kensho; Subject is the words alone
+    gPlate.setTargetValue (wantPlate ? 1.0f : 0.0f);
+    sPre.setTargetValue (pPre->load() * 0.001f * (float) sr);
     sWidth.setTargetValue (pWidth->load()); sMix.setTargetValue (pMix->load());
     sOut.setTargetValue (Decibels::decibelsToGain (pOutput->load()));
+    sLow.setTargetValue (pLow->load()); sHigh.setTargetValue (pHigh->load());
 
     for (int c = 0; c < 2; ++c) dryBuf.copyFrom (c, 0, buffer, c, 0, n);
-    algBuf.clear (0, n); irBuf.clear (0, n);
-    float* aL = algBuf.getWritePointer (0); float* aR = algBuf.getWritePointer (1);
-    float* iL = irBuf.getWritePointer (0);  float* iR = irBuf.getWritePointer (1);
+    wetBuf.clear (0, n);
     const float* inL = dryBuf.getReadPointer (0); const float* inR = dryBuf.getReadPointer (1);
+    float* wL = wetBuf.getWritePointer (0); float* wR = wetBuf.getWritePointer (1);
 
-    // ---- Object: pre-delay, then the algorithmic reverb ----
-    const bool algActive = wantAlg || gAlg.isSmoothing() || gAlg.getCurrentValue() > 1.0e-4f;
-    if (algActive)
+    const bool plateActive = wantPlate || gPlate.isSmoothing() || gPlate.getCurrentValue() > 1.0e-4f;
+    if (plateActive)
     {
-        if (! algRunning) { plate.reset(); hall.reset(); algRunning = true; }
-        const int type = jlimit (0, 2, roundToInt (pType->load()));
-        const float size = sSize.getTargetValue(), damp = sDamp.getTargetValue();
+        if (! plateRunning) { plate.reset(); preDelay.reset(); for (auto* f : { &hp[0], &hp[1], &lp[0], &lp[1] }) f->reset(); plateRunning = true; }
+        // the send: mono, pre-delayed, then the low and high cut
+        sLow.skip (n); sHigh.skip (n);
+        updateFilters (sLow.getCurrentValue(), sHigh.getCurrentValue());
         for (int i = 0; i < n; ++i)
         {
-            const float pd = sPre.getNextValue();
-            preRev.pushSample (0, inL[i]); preRev.pushSample (1, inR[i]);
-            aL[i] = preRev.popSample (0, pd); aR[i] = preRev.popSample (1, pd);
+            preDelay.pushSample (0, 0.5f * (inL[i] + inR[i]));
+            float x = preDelay.popSample (0, sPre.getNextValue());
+            x = hp[1].process (hp[0].process (x));
+            x = lp[1].process (lp[0].process (x));
+            send[(size_t) i] = x;
         }
-        if (type == 2) { plate.setParameters (size, damp); plate.process (aL, aR, n); }
-        else if (type == 1) { hall.setParameters (size, damp); hall.process (aL, aR, n); }
-        else
-        {   // Room: the hall engine made small and close, with the input diffused first so small spaces don't ring
-            for (int i = 0; i < n; ++i)
+        const float rt = pDecay->load();
+        plate.setParameters (rt, pDamp->load());
+        // a longer plate holds more energy: part of that is taken back, so a long plate sits at about the level of a short one
+        const float levelTrim = std::pow (2.2f / rt, 0.25f);
+        plate.process (send.data(), wL, wR, n);
+
+        // Duck: follows the dry voice; the louder it sings, the further the plate steps back (up to 18 dB)
+        const float duck = pDuck->load();
+        const float atk = 1.0f - std::exp (-1.0f / (0.005f * (float) sr)), rel = 1.0f - std::exp (-1.0f / (0.30f * (float) sr));
+        const float gAtk = 1.0f - std::exp (-1.0f / (0.015f * (float) sr)), gRel = 1.0f - std::exp (-1.0f / (0.25f * (float) sr));
+        for (int i = 0; i < n; ++i)
+        {
+            const float lvl = std::max (std::abs (inL[i]), std::abs (inR[i]));
+            duckEnv += (lvl > duckEnv ? atk : rel) * (lvl - duckEnv);
+            float target = 1.0f;
+            if (duck > 0.001f)
             {
-                float l = aL[i], r = aR[i];
-                for (int s = 0; s < 3; ++s) { l = roomDiff[0][s].process (l); r = roomDiff[1][s].process (r); }
-                aL[i] = l; aR[i] = r;
+                const float envDb = Decibels::gainToDecibels (duckEnv, -100.0f);
+                const float amount = jlimit (0.0f, 1.0f, (envDb + 45.0f) / 30.0f);   // from -45 dBFS to -15 dBFS the ducking deepens
+                target = Decibels::decibelsToGain (-18.0f * duck * amount);
             }
-            hall.setParameters (size * 0.4f, jlimit (0.0f, 1.0f, damp * 0.8f + 0.1f)); hall.process (aL, aR, n);
-        }
-        const float makeup = type == 2 ? 1.0f : type == 1 ? 1.0f : 1.35f;
-        for (int i = 0; i < n; ++i)
-        {
-            const float g = gAlg.getNextValue() * sLevel.getNextValue() * 1.6f * makeup;
-            aL[i] *= g; aR[i] *= g;
+            duckGain += (target < duckGain ? gAtk : gRel) * (target - duckGain);
+            const float g = gPlate.getNextValue() * duckGain * 1.0f * levelTrim;
+            wL[i] *= g; wR[i] *= g;
         }
     }
-    else { if (algRunning) { plate.reset(); hall.reset(); algRunning = false; } gAlg.skip (n); sLevel.skip (n); sSize.skip (n); sDamp.skip (n); sPre.skip (n); }
-
-    // ---- Subject: pre-delay, then the impulse response ----
-    const bool irActive = wantIR || gIR.isSmoothing() || gIR.getCurrentValue() > 1.0e-4f;
-    if (irActive)
+    else
     {
-        irRunning = true;
-        for (int i = 0; i < n; ++i)
-        {
-            const float pd = sIPre.getNextValue();
-            preIR.pushSample (0, inL[i]); preIR.pushSample (1, inR[i]);
-            iL[i] = preIR.popSample (0, pd); iR[i] = preIR.popSample (1, pd);
-        }
-        dsp::AudioBlock<float> blk (irBuf.getArrayOfWritePointers(), 2, (size_t) n);
-        conv.process (dsp::ProcessContextReplacing<float> (blk));
-        for (int i = 0; i < n; ++i)
-        {
-            const float g = gIR.getNextValue() * sILevel.getNextValue() * 10.3f;   // the convolution engine normalises the IR; this brings it to the same loudness as the reverbs
-            iL[i] *= g; iR[i] *= g;
-        }
+        if (plateRunning) { plate.reset(); plateRunning = false; }
+        gPlate.skip (n); sPre.skip (n); sLow.skip (n); sHigh.skip (n);
     }
-    else { if (irRunning) { conv.reset(); irRunning = false; } gIR.skip (n); sILevel.skip (n); sIPre.skip (n); }
 
-    // ---- Kensho: fuse the two spaces with a shared diffusion, so they read as one ----
-    const bool kensho = persp == 1;
     float* oL = buffer.getWritePointer (0); float* oR = buffer.getWritePointer (1);
     double sumL = 0, sumR = 0, inSumL = 0, inSumR = 0;
     float peak = 0.0f;
     for (int i = 0; i < n; ++i)
     {
-        float wl = aL[i] + iL[i], wr = aR[i] + iR[i];
-        if (kensho)
-        {
-            const float fl = blend[0][1].process (blend[0][0].process (wl));
-            const float fr = blend[1][1].process (blend[1][0].process (wr));
-            wl = fl; wr = fr;   // a pure all-pass chain: it smears the phase of both spaces together without colouring the tone
-        }
-        wl = air[0].processSample (fuse[0].processSample (wl));
-        wr = air[1].processSample (fuse[1].processSample (wr));
-        // width of the wet signal (mid/side)
-        const float w = sWidth.getNextValue();
+        float wl = wL[i], wr = wR[i];
+        const float w = sWidth.getNextValue();   // the width of the plate (mid / side)
         const float m = 0.5f * (wl + wr), s = 0.5f * (wl - wr) * w;
         wl = m + s; wr = m - s;
         const float mix = sMix.getNextValue(), og = sOut.getNextValue();
@@ -463,7 +225,8 @@ void DualityProcessor::setCurrentProgram (int index)
     currentProgram = index;
     for (auto* param : getParameters())
         if (auto* rp = dynamic_cast<RangedAudioParameter*> (param))
-            rp->setValueNotifyingHost (rp->getDefaultValue());
+            if (rp->getParameterID() != "mix" && rp->getParameterID() != "output")   // a preset keeps your mix and level
+                rp->setValueNotifyingHost (rp->getDefaultValue());
     for (auto& [id, value] : programs()[(size_t) index].values)
         if (auto* rp = apvts.getParameter (id))
             rp->setValueNotifyingHost (rp->convertTo0to1 (value));
@@ -485,10 +248,6 @@ void DualityProcessor::setStateInformation (const void* data, int sizeInBytes)
     auto state = ValueTree::fromXml (*xml);
     currentProgram = jlimit (0, getNumPrograms() - 1, (int) state.getProperty ("program", 0));
     apvts.replaceState (state);
-    // bring back the impulse response this session was using
-    const String file = state.getProperty ("irFile").toString();
-    if (file.isNotEmpty() && File (file).existsAsFile()) loadIR (File (file));
-    else loadBuiltInIR ((int) state.getProperty ("irBuiltIn", 1));
     updateHostDisplay (ChangeDetails().withProgramChanged (true));
 }
 
