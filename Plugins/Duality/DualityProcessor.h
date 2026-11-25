@@ -2,6 +2,7 @@
 
 #include "ArtifactsProcessor.h"
 #include "VocalPlate.h"
+#include "DualityShared.h"
 #include "DualityARA.h"
 #include <mutex>
 #include <array>
@@ -100,9 +101,32 @@ private:
     juce::ThreadPool peakPool { 1 };   // (last: it is gone, its job finished, before the things the job uses)
 
     std::atomic<float> *pDecay, *pDamp, *pPre, *pLow, *pHigh, *pDuck, *pPersp, *pWidth, *pMix, *pOutput;
-    // the same ten, always this instance's own knobs (pDecay... point at the track's shared settings while Duality plays an ARA track)
-    std::array<std::atomic<float>*, 10> own {};
-    void pointParamsAt (std::array<std::atomic<float>*, 10>);
+    // the track's settings (DualityParams): own = this instance's knobs; cur = what plays (the track's shared settings while
+    // Duality plays an ARA track: Cubase's Lower Zone editor is another instance)
+    using ParamSet = std::array<std::atomic<float>*, DualityParams::numShared>;
+    ParamSet own {}, cur {};
+    void pointParamsAt (const ParamSet&);
+    float P (DualityParams::Index i) const { return cur[(size_t) i]->load(); }
+
+    // the words' effects (ARA): the marked words of the event that plays, Throw (a plate of its own) and Echo
+    void wordSends (const juce::AudioBuffer<float>& dry, int numSamples);   // (before the plate) which words feed which effect
+    void wordReturns (juce::AudioBuffer<float>& out, int numSamples);        // (after the plate) the effects, added in
+    juce::AudioPlayHead::PositionInfo blockPos;
+    bool wordsBound = false;
+    int testGates = -1;   // the offline tests: every sample is a marked word with these effects (DUALITY_TEST_GATES)
+    VocalPlate throwPlate;
+    std::vector<float> throwSend, echoSend, throwPreBuf, fxL, fxR;
+    int throwPreW = 0;
+    float throwEnv = 0, echoEnv = 0, throwRet = 0, echoRet = 0, throwToneLP[2] {}, throwToneHP[2] {}, throwHPz = 0;
+    struct Echo
+    {
+        std::vector<float> l, r; int w = 0;
+        float time = 0;             // samples, glides to the target (a tape echo bends as its time moves)
+        float lp[2] {}, hp[2] {}, wow = 0;
+        void prepare (int maxSamples) { l.assign ((size_t) maxSamples, 0.0f); r.assign ((size_t) maxSamples, 0.0f); w = 0; time = 0; lp[0] = lp[1] = hp[0] = hp[1] = 0; }
+        float read (const std::vector<float>& b, float d) const;
+    } echo;
+    double fxSampleRate = 48000.0;
    #if JucePlugin_Enable_ARA
     DualityARA::DocumentController* araDoc = nullptr;   // the document of this instance (audio thread's copy)
     const void* araTrack = nullptr;                     // the track this instance plays
@@ -111,7 +135,7 @@ private:
     bool pickRegion (juce::ARAPlaybackRegion*& region, DualityARA::DocumentController*& doc);
     // the editor's side: which track it shows, and the settings as last agreed between its knobs and the document
     const void* editTrack = nullptr;
-    std::array<float, 10> mirror {};
+    std::array<float, DualityParams::numShared> mirror {};
    #endif
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (DualityProcessor)

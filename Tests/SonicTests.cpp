@@ -1323,6 +1323,40 @@ static void testEquanimity (double sr)
 
 //==============================================================================
 // Duality: how the plate treats a voice. Band decay times, what it does to an S, and what Duck does in the gaps.
+// the words' effects, with every sample marked (DUALITY_TEST_GATES): a 100 ms burst, the plate and the dry voice off
+static void wordsProbe (double sr)
+{
+    auto run = [sr] (int gates, std::function<void (Rig&)> setup)
+    {
+        setenv ("DUALITY_TEST_GATES", String (gates).toRawUTF8(), 1);
+        Rig r (sr); r.set ("perspective", 2); r.norm ("mix", 0.0f); setup (r);
+        const int n = (int) (sr * 3.0);
+        Buf x ((size_t) n, 0.0f), oL, oR;
+        Random rng (3); for (int i = (int) (0.1 * sr); i < (int) (0.2 * sr); ++i) x[(size_t) i] = 0.3f * (rng.nextFloat() * 2.0f - 1.0f);
+        r.process (x, x, oL, oR);
+        unsetenv ("DUALITY_TEST_GATES");
+        return std::make_pair (oL, oR);
+    };
+    auto rms = [sr] (const Buf& b, double t0, double t1) { double s = 0; int c = 0; for (int i = (int) (t0 * sr); i < (int) (t1 * sr) && i < (int) b.size(); ++i) { s += b[(size_t) i] * b[(size_t) i]; ++c; } return 10.0 * std::log10 (s / jmax (1, c) + 1e-20); };
+    {
+        auto o = run (0, [] (Rig&) {});
+        std::cout << "no effects: 0.3-0.4 s " << rms (o.first, 0.3, 0.4) << " dB (the burst itself is dry and passes: Mix 0 keeps the voice)\n";
+    }
+    {
+        auto o = run (1, [] (Rig& r) { r.set ("tdecay", 3.0f); });
+        std::cout << "throw: tail 0.5-1.0 s " << rms (o.first, 0.5, 1.0) << " dB, 2.0-2.5 s " << rms (o.first, 2.0, 2.5) << " dB, L/R differ " << (o.first[(size_t) (0.6 * sr)] != o.second[(size_t) (0.6 * sr)]) << "\n";
+        auto f = run (1, [] (Rig& r) { r.set ("tdecay", 3.0f); r.set ("tfreeze", 1.0f); });
+        std::cout << "throw freeze: 2.0-2.5 s " << rms (f.first, 2.0, 2.5) << " dB\n";
+    }
+    {
+        auto o = run (2, [] (Rig& r) { r.set ("esync", 1.0f); r.set ("enote", 5.0f); r.set ("efb", 0.5f); });   // 1/8 at 120 bpm: 0.25 s
+        std::cout << "echo 1/8 @120: 0.35-0.45 s " << rms (o.first, 0.35, 0.45) << " dB (first repeat), 0.27-0.33 s " << rms (o.first, 0.27, 0.33)
+                  << " dB (gap), 0.6-0.7 s " << rms (o.first, 0.6, 0.7) << " dB (second)\n";
+        auto pp = run (2, [] (Rig& r) { r.set ("etype", 2.0f); r.set ("efb", 0.5f); });
+        std::cout << "ping-pong: first repeat L " << rms (pp.first, 0.35, 0.45) << " R " << rms (pp.second, 0.35, 0.45) << "; second L " << rms (pp.first, 0.6, 0.7) << " R " << rms (pp.second, 0.6, 0.7) << "\n";
+    }
+}
+
 static void plateProbe (double sr)
 {
     auto band = [sr] (const Buf& x, double fc, double q)   // a two-pole band-pass (RBJ), run twice
@@ -1441,6 +1475,7 @@ int main (int argc, char** argv)
     if (argc > 2 && String (argv[2]) == "uiprobe") { uiProbe (sr); return 0; }
     if (argc > 2 && String (argv[2]) == "hiprobe") { hiProbe(); return 0; }
     if (argc > 2 && String (argv[2]) == "plateprobe") { plateProbe (sr); return 0; }
+    if (argc > 2 && String (argv[2]) == "wordsprobe") { wordsProbe (sr); return 0; }
     if (argc > 5 && String (argv[2]) == "plateir") { plateIR (sr, String (argv[3]).getFloatValue(), String (argv[4]).getFloatValue(), File (argv[5])); return 0; }
     if (gName.contains ("Equanimity")) { testEquanimity (sr); return 0; }
     testLatency (sr);

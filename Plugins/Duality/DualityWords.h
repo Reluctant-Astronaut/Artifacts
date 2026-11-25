@@ -21,6 +21,7 @@ namespace DualityWords
         double t0 = 0, t1 = 0;       // seconds, in the recording
         float confidence = 1.0f;     // how sure the listening was (0..1); a word placed from the lyrics: how well it matched
         bool selected = false;
+        int effects = 0;             // the Focus effects on it (bits: DualityParams::Effect)
     };
 
     // the listening model: where it lives on this computer, and fetching it once (about 190 MB)

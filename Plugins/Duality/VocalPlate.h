@@ -15,27 +15,22 @@
 class VocalPlate
 {
 public:
-    void prepare (double sampleRate)
+    // maxSize: the largest Size it will be set to (the lines are made that long once; Size then only shortens them)
+    void prepare (double sampleRate, float maxSize = 1.0f)
     {
         sr = sampleRate;
-        const double k = sampleRate / 29761.0;   // the paper gives its lengths at 29761 Hz
+        const double k = sampleRate / 29761.0 * juce::jmax (1.0f, maxSize);   // the paper gives its lengths at 29761 Hz
         auto n = [k] (int samples) { return juce::jmax (1, (int) std::round (samples * k)); };
-
+        excursion = (float) (14.0 * sampleRate / 29761.0);   // enough drift to break up the ringing of the tank, not so much that a vocal wobbles
         inDiff[0].setSize (n (142)); inDiff[1].setSize (n (107));
         inDiff[2].setSize (n (379)); inDiff[3].setSize (n (277));
-
-        excursion = (float) (14.0 * k);   // enough drift to break up the ringing of the tank, not so much that a vocal wobbles
-        modAP[0].setSize (n (672) + (int) excursion + 4);  baseMod[0] = (float) n (672);
-        modAP[1].setSize (n (908) + (int) excursion + 4);  baseMod[1] = (float) n (908);
+        modAP[0].setSize (n (672) + (int) excursion + 4);
+        modAP[1].setSize (n (908) + (int) excursion + 4);
         delayA[0].setSize (n (4453)); delayA[1].setSize (n (4217));
         decayAP[0].setSize (n (1800)); decayAP[1].setSize (n (2656));
         delayB[0].setSize (n (3720)); delayB[1].setSize (n (3163));
-        // the time a sound takes through each half of the tank (it passes the decay gain twice on the way)
-        for (int s = 0; s < 2; ++s)
-            halfLoop[s] = (baseMod[s] + (float) delayA[s].size() + (float) decayAP[s].size() + (float) delayB[s].size()) / (float) sr;
-
-        tL = { n (266), n (2974), n (1913), n (1996), n (1990), n (187), n (1066) };
-        tR = { n (353), n (3627), n (1228), n (2673), n (2111), n (335), n (121) };
+        size = -1.0f;
+        setSize (1.0f);
 
         // the plate's thin low end: a gentle high-pass inside the tank, so the lows decay faster than the mids
         // the tank's filters, matched to a real EMT 140's decay per band (White Sea Studio's, measured from its impulse response):
@@ -45,6 +40,29 @@ public:
         lowLeak = (float) (1.0 - std::exp (-juce::MathConstants<double>::twoPi * 500.0 / sr));
         reset();
         setParameters (2.0f, 0.3f);
+    }
+
+    // Size: the plate's dimensions, 0.6 (small, quick, dense) to the maxSize it was prepared for (large, spacious)
+    void setSize (float newSize)
+    {
+        newSize = juce::jlimit (0.5f, 2.0f, newSize);
+        if (std::abs (newSize - size) < 0.01f) return;
+        size = newSize;
+        const double k = sr / 29761.0 * size;
+        auto n = [k] (int samples) { return juce::jmax (1, (int) std::round (samples * k)); };
+        inDiff[0].setLength (n (142)); inDiff[1].setLength (n (107));
+        inDiff[2].setLength (n (379)); inDiff[3].setLength (n (277));
+        modAP[0].setLength (n (672) + (int) excursion + 4);  baseMod[0] = (float) n (672);
+        modAP[1].setLength (n (908) + (int) excursion + 4);  baseMod[1] = (float) n (908);
+        delayA[0].setLength (n (4453)); delayA[1].setLength (n (4217));
+        decayAP[0].setLength (n (1800)); decayAP[1].setLength (n (2656));
+        delayB[0].setLength (n (3720)); delayB[1].setLength (n (3163));
+        // the time a sound takes through each half of the tank (it passes the decay gain twice on the way)
+        for (int s = 0; s < 2; ++s)
+            halfLoop[s] = (baseMod[s] + (float) delayA[s].size() + (float) decayAP[s].size() + (float) delayB[s].size()) / (float) sr;
+        tL = { n (266), n (2974), n (1913), n (1996), n (1990), n (187), n (1066) };
+        tR = { n (353), n (3627), n (1228), n (2673), n (2111), n (335), n (121) };
+        if (userDecay > 0.0f) setParameters (userDecay, userDamping);
     }
 
     void reset()
@@ -59,6 +77,7 @@ public:
     // decay: RT60 in seconds (at about 1 kHz); damping 0..1: from open and silvery to dark and warm
     void setParameters (float decaySeconds, float damping)
     {
+        userDecay = decaySeconds; userDamping = damping;
         rt60 = juce::jlimit (0.2f, 30.0f, decaySeconds);
         // measured against the knob: the tank's low leak and its diffusion shift the real decay a little; this puts it back
         rt60 /= juce::jlimit (0.6f, 1.3f, 1.06f - 0.13f * std::log (rt60));
@@ -124,10 +143,11 @@ private:
     struct Line
     {
         std::vector<float> buf;
-        int w = 0;
-        void setSize (int n) { buf.assign ((size_t) juce::jmax (2, n), 0.0f); w = 0; }
+        int w = 0, len = 2;
+        void setSize (int n) { buf.assign ((size_t) juce::jmax (2, n), 0.0f); w = 0; len = (int) buf.size(); }
+        void setLength (int n) { len = juce::jlimit (2, (int) buf.size(), n); if (w >= len) w = 0; }   // (no allocation)
         void clear()         { std::fill (buf.begin(), buf.end(), 0.0f); w = 0; }
-        int size() const     { return (int) buf.size(); }
+        int size() const     { return len; }
         void push (float x)  { buf[(size_t) w] = x; if (++w >= size()) w = 0; }
         float tap (int d) const   // the value written d samples ago (0 = the latest)
         {
@@ -165,4 +185,5 @@ private:
     float rt60 = 2.0f, decay[2] { 0.7f, 0.7f }, dampCoef = 0.3f, airCoef = 0.3f, damp[2] {}, air[2] {}, tankFeed[2] {}, low[2] {}, lowLeak = 0.01f;
     float outGain = 0.6f;
     bool freeze = false;
+    float size = 1.0f, userDecay = -1.0f, userDamping = 0.3f;
 };

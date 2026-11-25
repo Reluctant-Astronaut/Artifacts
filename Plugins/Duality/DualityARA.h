@@ -14,6 +14,7 @@
 #include <array>
 #include <mutex>
 #include <deque>
+#include "DualityShared.h"
 #if DUALITY_WORDS
  #include "DualityWords.h"
 #endif
@@ -66,12 +67,13 @@ namespace DualityARA
     // in the Lower Zone. The plate's settings therefore live here, in the document, one set per track (region sequence),
     // shared by every instance: the editor's knobs write them, the instance that plays the track reads them.
     // They are saved with the project, one copy per vocal event (audio modification) of the track.
-    static constexpr int numShared = 10;
-    inline const char* const sharedIDs[numShared] { "pdecay", "pdamp", "ppre", "plowcut", "phighcut", "pduck", "perspective", "width", "mix", "output" };
+    using DualityParams::numShared;
+    using DualityParams::sharedIDs;
     struct Settings
     {
         std::array<std::atomic<float>, numShared> v {};
-        void set (const float* x) { for (int i = 0; i < numShared; ++i) v[(size_t) i].store (x[i]); }
+        // (a value that is not a number is left as it is: a project saved before that setting existed)
+        void set (const float* x) { for (int i = 0; i < numShared; ++i) if (! std::isnan (x[i])) v[(size_t) i].store (x[i]); }
         void get (float* x) const { for (int i = 0; i < numShared; ++i) x[i] = v[(size_t) i].load(); }
     };
 
@@ -86,6 +88,7 @@ namespace DualityARA
         // where the song is: written by whichever instance plays, read by the editor's
         std::atomic<double> songTime { -1.0 };
         std::atomic<bool> playing { false };
+        std::atomic<double> bpm { 120.0 };
 
         ~DocumentController() override;
 
@@ -106,7 +109,14 @@ namespace DualityARA
         void editWord (juce::ARAAudioSource*, int index, const juce::String& text);   // "" removes it; "two words" splits it
         void removeWords (juce::ARAAudioSource*, int first, int last);
         void placeLyrics (juce::ARAAudioSource*, const juce::String& lyrics);
+        void setEffect (juce::ARAAudioSource*, int effect, bool on, double from, double to);   // on the selected words in [from, to]
        #endif
+
+        // the marked words of a recording, for the audio thread: [t0, t1) in the recording's time, and the effects on them
+        struct Mark { double t0, t1; int effects; };
+        using Marks = std::vector<Mark>;
+        // (audio thread: never waits; an empty pointer if the words are being changed this very moment)
+        std::shared_ptr<const Marks> marksOf (const std::string& sourceID);
 
     protected:
     protected:
@@ -133,7 +143,11 @@ namespace DualityARA
         void listen (juce::Thread&);   // the listener thread: one recording at a time
         void setHearing (const std::string& id, Hearing h, float progress, const juce::String& error = {});
         DualityWords::Ears ears;
+        void publishMarks (const std::string& id);   // (wordsMutex held)
        #endif
+        juce::SpinLock marksLock;
+        std::map<std::string, std::shared_ptr<const Marks>> marks;
+        std::vector<std::shared_ptr<const Marks>> retired;   // the audio thread may still hold these: never freed there
     };
 }
 

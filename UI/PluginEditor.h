@@ -296,7 +296,11 @@ private:
 
     IRWindow irWindow;
     WordsWindow wordsWindow;
-    bool throwPage = false;   // Duality mock-up: which Words page is shown
+    bool throwPage = false;   // Duality: the Throw page is shown (its knobs differ from the other pages')
+    int wordsPage = 1;        // Duality: the effect whose settings the Words knobs show (DualityParams::Effect order)
+    bool wordsSync = true;    // Echo: Time in note values (Sync) or in ms
+    void setWordsPage (int effect);
+    juce::String wordsPageTitle() const;
     int wordsTick = 0;
     bool previewLive = false;
     ApplyKeys applyKeys;

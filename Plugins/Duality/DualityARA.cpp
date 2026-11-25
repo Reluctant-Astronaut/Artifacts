@@ -118,7 +118,7 @@ bool DocumentController::doStoreObjectsToStream (ARAOutputStream& out, const ARA
             rows.push_back ({ m->getPersistentID(), x });
             break;
         }
-    bool ok = out.writeInt (2);   // format version (1: the settings only; 2: and the words)
+    bool ok = out.writeInt (3);   // format version (1: the settings only; 2: and the words; 3: and their effects)
     ok = ok && out.writeInt ((int) rows.size());
     for (auto& r : rows)
     {
@@ -143,7 +143,7 @@ bool DocumentController::doStoreObjectsToStream (ARAOutputStream& out, const ARA
         ok = ok && out.writeString (String::fromUTF8 (h.first.c_str())) && out.writeInt ((int) h.second.size());
         for (auto& wd : h.second)
             ok = ok && out.writeString (wd.text) && out.writeDouble (wd.t0) && out.writeDouble (wd.t1)
-                    && out.writeFloat (wd.confidence) && out.writeBool (wd.selected);
+                    && out.writeFloat (wd.confidence) && out.writeBool (wd.selected) && out.writeInt (wd.effects);
     }
    #else
     ok = ok && out.writeInt (0);
@@ -155,7 +155,7 @@ bool DocumentController::doRestoreObjectsFromStream (ARAInputStream& in, const A
 {
     if (in.getNumBytesRemaining() <= 0) return true;   // a project from before Duality kept anything
     const int version = in.readInt();
-    if (version != 1 && version != 2) return true;
+    if (version < 1 || version > 3) return true;
     const int count = in.readInt();
     std::unique_lock<std::mutex> l (settingsMutex);
     for (int i = 0; i < count && ! in.failed(); ++i)
@@ -163,8 +163,8 @@ bool DocumentController::doRestoreObjectsFromStream (ARAInputStream& in, const A
         const auto id = in.readString();
         const int n = in.readInt();
         std::array<float, numShared> x {};
+        x.fill (std::numeric_limits<float>::quiet_NaN());   // (settings newer than the project keep their defaults)
         for (int k = 0; k < n; ++k) { const float f = in.readFloat(); if (k < numShared) x[(size_t) k] = f; }
-        if (n < numShared) continue;
         if (auto* m = filter->getAudioModificationToRestoreStateWithID<ARAAudioModification> (id.toRawUTF8()))
         {
             restored[m] = x;
@@ -190,11 +190,12 @@ bool DocumentController::doRestoreObjectsFromStream (ARAInputStream& in, const A
             {
                 const auto text = in.readString(); const double t0 = in.readDouble(), t1 = in.readDouble();
                 const float conf = in.readFloat(); const bool sel = in.readBool();
+                const int fx = version >= 3 ? in.readInt() : 0;
                #if DUALITY_WORDS
-                DualityWords::Word wd; wd.text = text; wd.t0 = t0; wd.t1 = t1; wd.confidence = conf; wd.selected = sel;
+                DualityWords::Word wd; wd.text = text; wd.t0 = t0; wd.t1 = t1; wd.confidence = conf; wd.selected = sel; wd.effects = fx;
                 ws.push_back (wd);
                #else
-                ignoreUnused (text, t0, t1, conf, sel);
+                ignoreUnused (text, t0, t1, conf, sel, fx);
                #endif
             }
            #if DUALITY_WORDS
@@ -203,6 +204,7 @@ bool DocumentController::doRestoreObjectsFromStream (ARAInputStream& in, const A
                 std::lock_guard<std::mutex> w (wordsMutex);
                 auto& e = wordsBySource[src->getPersistentID()];
                 e.words = std::move (ws); e.state = Hearing::done; e.progress = 1.0f; e.error.clear();
+                publishMarks (src->getPersistentID());
             }
            #endif
         }
@@ -318,10 +320,11 @@ void DocumentController::listen (Thread& thread)
         auto& e = wordsBySource[job.id];
         if (e.lyrics.isNotEmpty())   // lyrics pasted while it listened: those words, on what it heard
         {
-            words = DualityWords::placeLyrics (words, e.lyrics, 0.0, a16.size() / 16000.0);
+            words = DualityWords::placeLyrics (words, e.lyrics, 0.0, (double) a16.size() / 16000.0);
             e.lyrics.clear();
         }
         e.words = std::move (words); e.state = Hearing::done; e.progress = 1.0f; e.error.clear();
+        publishMarks (job.id);
     }
 }
 
@@ -348,16 +351,17 @@ void DocumentController::editWord (ARAAudioSource* src, int index, const String&
     for (auto& p : parts) { auto c = DualityWords::cleanWord (p); if (c.isNotEmpty()) { DualityWords::Word x; x.text = c; now.push_back (x); } }
     const auto old = ws[(size_t) index];
     ws.erase (ws.begin() + index);
-    if (now.empty()) return;
+    if (now.empty()) { publishMarks (src->getPersistentID()); return; }
     // one word becomes several: its time shared by their lengths
     int chars = 0; for (auto& x : now) chars += x.text.length() + 1;
     double t = old.t0;
     for (auto& x : now)
     {
         const double d = (old.t1 - old.t0) * (x.text.length() + 1) / (double) chars;
-        x.t0 = t; x.t1 = t + d * (now.size() > 1 ? 0.94 : 1.0); x.confidence = 1.0f; x.selected = old.selected; t += d;
+        x.t0 = t; x.t1 = t + d * (now.size() > 1 ? 0.94 : 1.0); x.confidence = 1.0f; x.selected = old.selected; x.effects = old.effects; t += d;
     }
     ws.insert (ws.begin() + index, now.begin(), now.end());
+    publishMarks (src->getPersistentID());
 }
 
 void DocumentController::removeWords (ARAAudioSource* src, int first, int last)
@@ -367,6 +371,7 @@ void DocumentController::removeWords (ARAAudioSource* src, int first, int last)
     if (first > last) std::swap (first, last);
     first = jmax (0, first); last = jmin ((int) ws.size() - 1, last);
     if (first <= last) ws.erase (ws.begin() + first, ws.begin() + last + 1);
+    publishMarks (src->getPersistentID());
 }
 
 void DocumentController::placeLyrics (ARAAudioSource* src, const String& lyrics)
@@ -377,13 +382,45 @@ void DocumentController::placeLyrics (ARAAudioSource* src, const String& lyrics)
         if (e.state == Hearing::done)
         {
             e.words = DualityWords::placeLyrics (e.words, lyrics, 0.0, src->getDuration());
+            publishMarks (src->getPersistentID());
             return;
         }
         e.lyrics = lyrics;   // still listening (or not yet): placed when it is done
     }
     hear (src, wordsOf (src).state == Hearing::failed);
 }
+void DocumentController::setEffect (ARAAudioSource* src, int effect, bool on, double from, double to)
+{
+    std::lock_guard<std::mutex> w (wordsMutex);
+    auto& ws = wordsBySource[src->getPersistentID()].words;
+    for (auto& wd : ws)
+        if (wd.selected && wd.t1 > from && wd.t0 < to)
+            wd.effects = on ? (wd.effects | (1 << effect)) : (wd.effects & ~(1 << effect));
+    publishMarks (src->getPersistentID());
+}
+
+void DocumentController::publishMarks (const std::string& id)
+{
+    auto m = std::make_shared<Marks>();
+    auto it = wordsBySource.find (id);
+    if (it != wordsBySource.end())
+        for (auto& wd : it->second.words)
+            if (wd.effects != 0) m->push_back ({ wd.t0, wd.t1, wd.effects });
+    std::shared_ptr<const Marks> c = std::move (m);
+    const SpinLock::ScopedLockType l (marksLock);
+    auto& slot = marks[id];
+    if (slot != nullptr) retired.push_back (slot);
+    slot = std::move (c);
+}
 #endif
+
+std::shared_ptr<const DocumentController::Marks> DocumentController::marksOf (const std::string& id)
+{
+    const SpinLock::ScopedTryLockType l (marksLock);
+    if (! l.isLocked()) return {};
+    auto it = marks.find (id);
+    return it != marks.end() ? it->second : nullptr;
+}
 }
 
 const ARA::ARAFactory* JUCE_CALLTYPE createARAFactory()

@@ -2220,6 +2220,36 @@ void WordsWindow::paintLive (juce::Graphics& g)
             auto box = Rectangle<float> (left, wy + lane * (wh + 2.0f), tw, wh);
             hits.push_back ({ box, index });
             const bool now = view.playhead >= wd.t0 && view.playhead < wd.t1;   // the word being sung
+            if (wd.effects != 0)   // its effects, drawn where they sound: a throw's tail, an echo's repeats
+            {
+                const Colour ox (0xff8f2a1e);
+                String tag;
+                if (wd.effects & 1)
+                {
+                    tag << "THROW";
+                    const float e1 = xAt (wd.t1 + jmin (3.0, view.throwSeconds * 0.5));
+                    Path p; p.startNewSubPath (b, cy - maxA * 0.8f); p.quadraticTo (b + (e1 - b) * 0.3f, cy - maxA * 0.2f, e1, cy);
+                    p.quadraticTo (b + (e1 - b) * 0.3f, cy + maxA * 0.2f, b, cy + maxA * 0.8f); p.closeSubPath();
+                    g.setGradientFill (ColourGradient (ox.withAlpha (0.30f), b, cy, ox.withAlpha (0.0f), e1, cy, false));
+                    g.fillPath (p);
+                }
+                if (wd.effects & 2)
+                {
+                    tag << (tag.isNotEmpty() ? String::fromUTF8 (" \xc2\xb7 ") : String()) << "ECHO";
+                    for (int k = 1; k <= 3; ++k)
+                    {
+                        const float off = xAt (wd.t0 + view.echoSeconds * k) - a, h = maxA * 0.7f * std::pow (0.6f, (float) k);
+                        g.setColour (ox.withAlpha (0.45f * std::pow (0.65f, (float) k)));
+                        g.drawRoundedRectangle (Rectangle<float> (a + off, cy - h, jmax (3.0f, b - a), 2.0f * h), 2.0f, 1.0f);
+                    }
+                }
+                if (tag.isNotEmpty())
+                {
+                    g.setColour (ox.withAlpha (0.85f));
+                    g.setFont (KintsugiFonts::serif (8.0f, false).withExtraKerningFactor (0.1f));
+                    g.drawText (tag, Rectangle<float> (a, cy - maxA - 13.0f, 140.0f, 10.0f), Justification::centredLeft);
+                }
+            }
             if (left - want > 4.0f || lane == 1)   // pushed aside: a hairline down to where it starts
             {
                 g.setColour (ink.withAlpha (0.25f));
@@ -3626,24 +3656,25 @@ ArtifactsEditor::ArtifactsEditor (ArtifactsProcessor& p)
         drift->slider.getProperties().remove ("kintsugi");   // the mended cap belongs to Kintsugi
         cDrive->name = "Decay"; hum->name = "Damping"; glue->name = "Pre-delay"; wow->name = "Width";
         tone->name = "Low Cut"; drift->name = "High Cut"; flutter->name = "Duck";
-        // the Words knobs show the settings of the effect being edited (mock-up pages: Echo, or Throw with DUALITY_PAGE=throw)
-        throwPage = juce::SystemStats::getEnvironmentVariable ("DUALITY_PAGE", "") == "throw";
-        applyKeys.edit = throwPage ? 0 : 1;
-        if (throwPage)
-        {
-            vDrive->name = "Decay"; bias->name = "Pre-delay"; wear->name = "Size"; sag->name = "Tone"; vMix->name = "Amount";
-            vType->slider.setVisible (false); vType->readout.setVisible (false); vType->printed = false;
-            noiseSwitch.setTooltip ("Freeze: the throw's tail hangs on");
-        }
-        else
-        {
-        vDrive->name = "Time"; bias->name = "Feedback"; sag->name = "Tone"; vMix->name = "Amount";
-        wear->slider.setVisible (false); wear->readout.setVisible (false); wear->printed = false;
-        }
+        // the Words knobs show the settings of the effect being edited: the Focus key pressed last (Echo to begin with)
         plateArea.addAndMakeVisible (noiseLamp); plateArea.addAndMakeVisible (noiseSwitch);
-        if (! throwPage) noiseSwitch.setTooltip ("Sync: echo time in note values from the song's tempo");
+        noiseSwitch.onClick = [this] { toggleParam ("noiseon"); };
+        applyKeys.onKey = [this] (int k)
+        {
+            bool any = false;
+            for (auto& w : wordsWindow.view.words) any = any || w.selected;
+            if (any && wordsWindow.live)   // on the selected words (or off again)
+            {
+                WordsAction a; a.kind = WordsAction::effect; a.first = k; a.last = (applyKeys.onMask >> k) & 1;
+                proc.wordsAction (a);
+                auto v = proc.getWordsView();
+                if (v.ara) wordsWindow.setView (std::move (v));
+            }
+            setWordsPage (k);
+        };
         for (auto* k : { bias, tone, drift, flutter, wear, sag, vMix, hum, glue }) k->marks.clear();
         vType->name = "Type"; vType->stepLabels = { "TAPE", "DIGITAL", "PING-PONG" };
+        juce::MessageManager::callAsync ([sp = juce::Component::SafePointer<ArtifactsEditor> (this)] { if (sp != nullptr) sp->setWordsPage (juce::SystemStats::getEnvironmentVariable ("DUALITY_PAGE", "") == "throw" ? 0 : 1); });
         irWindow.setVisible (false);
         plateArea.addAndMakeVisible (wordsWindow);
         plateArea.addAndMakeVisible (applyKeys);
@@ -3681,6 +3712,8 @@ ArtifactsEditor::ArtifactsEditor (ArtifactsProcessor& p)
                 {
                     if (wd.t0 > 68.0 && wd.t0 < 72.0 && wd.text == "quiet") { wd.text = "quite"; wd.confidence = 0.4f; }
                     if (wd.t0 > 68.0 && wd.t0 < 72.0 && (wd.text == "falling" || wd.text == "into")) wd.selected = true;
+                    if (wd.t0 > 68.0 && wd.t0 < 72.0 && wd.text == "falling") wd.effects = 3;
+                    if (wd.t0 > 64.0 && wd.t0 < 68.0 && wd.text == "low") wd.effects = 2;
                     if (wd.t0 > 64.0 && wd.t0 < 68.0 && wd.text == "shore") { wd.text = "shor"; wd.editing = true; }
                 }
                 if (livePreview == "hearing")
@@ -3871,6 +3904,50 @@ void ArtifactsEditor::toggleParam (const juce::String& slot)
     }
 }
 
+juce::String ArtifactsEditor::wordsPageTitle() const
+{
+    static const char* names[] = { "Throw", "Echo", "Swell", "Double", "Harmony", "Shift" };
+    return juce::String::fromUTF8 ("Words \xc2\xb7 ") + names[juce::jlimit (0, 5, wordsPage)];
+}
+
+void ArtifactsEditor::setWordsPage (int k)
+{
+    if (mockVariant != 3) return;
+    wordsPage = juce::jlimit (0, 5, k);
+    throwPage = wordsPage == 0;
+    applyKeys.edit = wordsPage; applyKeys.repaint();
+    if (auto* v = proc.apvts.getRawParameterValue ("esync")) wordsSync = v->load() > 0.5f;
+    auto show = [] (Knob* kn, bool on) { kn->slider.setVisible (on); kn->readout.setVisible (on); kn->printed = on; };
+    if (throwPage)
+    {
+        vDrive->name = "Decay"; bias->name = "Pre-delay"; wear->name = "Size"; sag->name = "Tone"; vMix->name = "Amount";
+        show (vType, false); show (wear, true);
+        noiseSwitch.setTooltip ("Freeze: the throw's tail hangs on");
+    }
+    else
+    {
+        vDrive->name = "Time"; bias->name = "Feedback"; sag->name = "Tone"; vMix->name = "Amount"; vType->name = "Type";
+        show (vType, true); show (wear, false);
+        noiseSwitch.setTooltip (wordsPage == 1 ? "Sync: echo time in note values from the song's tempo" : "This effect's settings arrive with it");
+    }
+    for (auto* kn : { vDrive, bias, sag, vType, vMix, wear })
+    {
+        kn->attachment.reset();
+        kn->slider.onValueChange = nullptr;
+        const auto id = rid (kn->slider.getName());
+        if (id.isNotEmpty() && proc.apvts.getParameter (id) != nullptr)
+            kn->attachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (proc.apvts, id, kn->slider);
+    }
+    if (laidOut)   // the knobs move, and the names printed on the plate change with them
+    {
+        layoutPanel();
+        renderPlate();
+        plateArea.image = &plate;
+    }
+    resized();
+    repaint();
+}
+
 juce::String ArtifactsEditor::rid (const juce::String& slot) const
 {
     // The panel is built from slots (the names of the Console and Kintsugi controls); the other plugins
@@ -3888,6 +3965,20 @@ juce::String ArtifactsEditor::rid (const juce::String& slot) const
         for (auto& m : shared)
             if (slot == m.first) return m.second;
         return {};
+    }
+    if (mockVariant == 3)   // Duality's Words knobs: the settings of the effect on the page
+    {
+        const bool wordsSlot = slot == "vdrive" || slot == "bias" || slot == "sag" || slot == "vtype" || slot == "vmix" || slot == "wear" || slot == "noiseon";
+        if (wordsSlot)
+        {
+            if (wordsPage == 1)
+                return slot == "vdrive" ? (wordsSync ? "enote" : "etime") : slot == "bias" ? "efb" : slot == "sag" ? "etone"
+                     : slot == "vtype" ? "etype" : slot == "vmix" ? "eamt" : slot == "noiseon" ? "esync" : "";
+            if (wordsPage == 0)
+                return slot == "vdrive" ? "tdecay" : slot == "bias" ? "tpre" : slot == "wear" ? "tsize" : slot == "sag" ? "ttone"
+                     : slot == "vmix" ? "tamt" : slot == "noiseon" ? "tfreeze" : "";
+            return {};   // the other effects: their settings arrive with them
+        }
     }
     struct Map { const char* slot; const char* duality; const char* anemoia; };
     static const Map map[] = {
@@ -4037,7 +4128,17 @@ void ArtifactsEditor::timerCallback()
         for (auto* k : { vDrive, bias, sag, vType, vMix, wear }) k->slider.setEnabled (tOn && hasParam (k->slider.getName()));   // the words' settings arrive with ARA
         consoleLamp.setGlow (cOn ? 1.0f : 0.0f);
         tapeLamp.setGlow (tOn ? 1.0f : 0.0f);
-        noiseSwitch.setOn (false); noiseLamp.setGlow (0.0f);   // Sync / Freeze: they arrive with the words
+        {   // Sync (Echo) / Freeze (Throw)
+            const bool nOn = hasParam ("noiseon") && paramValue ("noiseon", 0.0f) > 0.5f;
+            noiseSwitch.setOn (nOn); noiseLamp.setGlow (tOn && nOn ? 1.0f : 0.0f);
+            if (wordsPage == 1 && nOn != wordsSync) setWordsPage (1);   // Time: note values or ms
+        }
+        if (wordsWindow.live)   // the Focus keys show the effects on the selected words
+        {
+            int mask = 0;
+            for (auto& w : wordsWindow.view.words) if (w.selected) mask |= w.effects;
+            if (mask != applyKeys.onMask) { applyKeys.onMask = mask; applyKeys.repaint(); }
+        }
         {   // the Words window: the vocal event Duality is bound to (ARA), refreshed some 20 times a second
             if (++wordsTick % 3 == 0 && ! previewLive)
             {
@@ -4356,7 +4457,7 @@ void ArtifactsEditor::layoutPanel()
             x += 90 + sectionGap;
         }
         const int wcw = (2 * colW + 16 + 130 + 18) / 3;
-        const auto ir = addSection (juce::String::fromUTF8 (throwPage ? "Words \xc2\xb7 Throw" : "Words \xc2\xb7 Echo"), 3, wcw, &tapeLamp);
+        const auto ir = addSection (wordsPageTitle(), 3, wcw, &tapeLamp);
         placeKnob (*vDrive, 1, 0, ir, wcw); placeKnob (*bias, 2, 0, ir, wcw);
         placeKnob (throwPage ? *wear : *vType, 0, 1, ir, wcw); placeKnob (*sag, 1, 1, ir, wcw); placeKnob (*vMix, 2, 1, ir, wcw);
         {   // SYNC: lamp and lever, beside Time
