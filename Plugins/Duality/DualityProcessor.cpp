@@ -77,6 +77,12 @@ DualityProcessor::DualityProcessor()
     auto get = [this] (const char* id) { return apvts.getRawParameterValue (id); };
     pDecay = get ("pdecay"); pDamp = get ("pdamp"); pPre = get ("ppre"); pLow = get ("plowcut"); pHigh = get ("phighcut");
     pDuck = get ("pduck"); pPersp = get ("perspective"); pWidth = get ("width"); pMix = get ("mix"); pOutput = get ("output");
+    own = { pDecay, pDamp, pPre, pLow, pHigh, pDuck, pPersp, pWidth, pMix, pOutput };
+}
+
+void DualityProcessor::pointParamsAt (std::array<std::atomic<float>*, 10> p)
+{
+    pDecay = p[0]; pDamp = p[1]; pPre = p[2]; pLow = p[3]; pHigh = p[4]; pDuck = p[5]; pPersp = p[6]; pWidth = p[7]; pMix = p[8]; pOutput = p[9];
 }
 
 bool DualityProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
@@ -150,7 +156,31 @@ void DualityProcessor::processBlock (AudioBuffer<float>& buffer, MidiBuffer&)
         processBlockForARA (buffer, isRealtime(), pos);
         araTime.store (pos.getTimeInSeconds().orFallback (-1.0));
         araPlaying.store (pos.getIsPlaying());
+
+        // the plate plays with its track's settings, the ones the Lower Zone editor (another instance) sets
+        std::array<std::atomic<float>*, 10> use = own;
+        if (auto* renderer = getPlaybackRenderer<DualityARA::PlaybackRenderer>(); renderer != nullptr && ! renderer->getPlaybackRegions().empty())
+        {
+            auto* seq = renderer->getPlaybackRegions().front()->getRegionSequence();
+            if (araDoc == nullptr)
+                araDoc = ARADocumentControllerSpecialisation::getSpecialisedDocumentController<DualityARA::DocumentController> (renderer->getDocumentController());
+            if (seq != araTrack || araSettings == nullptr)
+            {
+                float init[10]; for (int i = 0; i < 10; ++i) init[i] = own[(size_t) i]->load();
+                if (auto* st = araDoc != nullptr ? araDoc->settingsFor (seq, seq, init, false) : nullptr) { araSettings = st; araTrack = seq; }
+            }
+            if (araSettings != nullptr && araTrack == seq)
+                for (int i = 0; i < 10; ++i) use[(size_t) i] = &araSettings->v[(size_t) i];
+            if (araDoc != nullptr)
+            {
+                araDoc->songTime.store (pos.getTimeInSeconds().orFallback (-1.0));
+                araDoc->playing.store (pos.getIsPlaying());
+            }
+        }
+        pointParamsAt (use);
     }
+    else
+        pointParamsAt (own);
    #endif
     if (buffer.getNumChannels() == 1)
     {
@@ -318,9 +348,60 @@ WordsView DualityProcessor::getWordsView()
    #if JucePlugin_Enable_ARA
     if (! isBoundToARA()) return v;
     v.ara = true;
-    auto* renderer = getPlaybackRenderer<DualityARA::PlaybackRenderer>();
-    if (renderer == nullptr || renderer->getPlaybackRegions().empty()) return v;
-    auto* region = renderer->getPlaybackRegions().front();
+    // Cubase shows the editor in an instance of its own, which plays nothing: the event comes from what is selected,
+    // else what this instance plays, else the track shown last, else the document's first track
+    ARAPlaybackRegion* region = nullptr;
+    ARA::PlugIn::DocumentController* araDC = nullptr;
+    if (auto* ev = getEditorView())
+    {
+        araDC = ev->getDocumentController();
+        const auto sel = ev->getViewSelection().getEffectivePlaybackRegions<ARAPlaybackRegion>();
+        if (! sel.empty()) region = sel.front();
+    }
+    if (auto* renderer = getPlaybackRenderer<DualityARA::PlaybackRenderer>())
+    {
+        if (araDC == nullptr) araDC = renderer->getDocumentController();
+        if (region == nullptr && ! renderer->getPlaybackRegions().empty()) region = renderer->getPlaybackRegions().front();
+    }
+    if (auto* r = getEditorRenderer())
+        if (araDC == nullptr) araDC = r->getDocumentController();
+    auto* doc = araDC != nullptr ? ARADocumentControllerSpecialisation::getSpecialisedDocumentController<DualityARA::DocumentController> (araDC) : nullptr;
+    if (doc == nullptr) return v;
+    if (region == nullptr)
+    {
+        ARARegionSequence* pick = nullptr;
+        for (auto* seq : doc->getDocument()->getRegionSequences())
+            if (! seq->getPlaybackRegions().empty() && (pick == nullptr || seq == editTrack)) pick = seq;
+        if (pick != nullptr) region = pick->getPlaybackRegions().front();
+    }
+    if (region == nullptr) return v;
+
+    // the knobs and the document agree: the track's settings on a new track, then whichever side moved
+    {
+        auto* seq = region->getRegionSequence();
+        float cur[10]; for (int i = 0; i < 10; ++i) cur[i] = own[(size_t) i]->load();
+        if (auto* st = doc->settingsFor (seq, seq, cur, true))
+        {
+            float sh[10]; st->get (sh);
+            auto push = [this] (int i, float x)
+            {
+                if (auto* p = apvts.getParameter (DualityARA::sharedIDs[i])) p->setValueNotifyingHost (p->convertTo0to1 (x));
+                mirror[(size_t) i] = x;   // (a value the knob rounds comes back next time, and is then the track's)
+            };
+            if (seq != editTrack)
+            {
+                editTrack = seq;
+                for (int i = 0; i < 10; ++i) push (i, sh[i]);
+                st->get (mirror.data());
+            }
+            else
+                for (int i = 0; i < 10; ++i)
+                {
+                    if (cur[i] != mirror[(size_t) i]) { st->v[(size_t) i].store (cur[i]); mirror[(size_t) i] = cur[i]; }
+                    else if (sh[i] != mirror[(size_t) i]) push (i, sh[i]);
+                }
+        }
+    }
     auto* modification = region->getAudioModification();
     auto* source = modification->getAudioSource();
     auto text = [] (const char* s) { return s != nullptr ? String::fromUTF8 (s) : String(); };
@@ -329,13 +410,13 @@ WordsView DualityProcessor::getWordsView()
     if (v.clip.isEmpty()) v.clip = text (source->getName());
     const double startInSource = region->getStartInAudioModificationTime(), length = region->getDurationInAudioModificationTime();
     v.length = length;
-    const double t = araTime.load();
+    const double t = doc->songTime.load();
     if (t >= 0.0)
     {
         const double rel = t - region->getStartInPlaybackTime();
         v.playhead = rel >= 0.0 && rel <= region->getDurationInPlaybackTime() ? rel : -1.0;
     }
-    v.playing = araPlaying.load();
+    v.playing = doc->playing.load();
 
     // the waveform: one peak per 10 ms of the event's own audio, read once per event (and again if it is trimmed)
     const auto key = String::toHexString ((pointer_sized_int) source) + ":" + String (startInSource, 3) + ":" + String (length, 3);

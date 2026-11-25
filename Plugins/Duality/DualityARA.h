@@ -11,6 +11,8 @@
 
 #include <juce_audio_formats/juce_audio_formats.h>
 #include <map>
+#include <array>
+#include <mutex>
 
 namespace DualityARA
 {
@@ -56,22 +58,45 @@ namespace DualityARA
         juce::AudioBuffer<float> temp;
     };
 
+    // Cubase runs Duality as several instances on one ARA document: one plays each track's events, another shows the editor
+    // in the Lower Zone. The plate's settings therefore live here, in the document, one set per track (region sequence),
+    // shared by every instance: the editor's knobs write them, the instance that plays the track reads them.
+    // They are saved with the project, one copy per vocal event (audio modification) of the track.
+    static constexpr int numShared = 10;
+    inline const char* const sharedIDs[numShared] { "pdecay", "pdamp", "ppre", "plowcut", "phighcut", "pduck", "perspective", "width", "mix", "output" };
+    struct Settings
+    {
+        std::array<std::atomic<float>, numShared> v {};
+        void set (const float* x) { for (int i = 0; i < numShared; ++i) v[(size_t) i].store (x[i]); }
+        void get (float* x) const { for (int i = 0; i < numShared; ++i) x[i] = v[(size_t) i].load(); }
+    };
+
     class DocumentController final : public juce::ARADocumentControllerSpecialisation, private ProcessingLock
     {
     public:
         using juce::ARADocumentControllerSpecialisation::ARADocumentControllerSpecialisation;
+
+        // the settings of a track; made from `initial` the first time (or from the project, if it saved some). Never freed
+        // while the document lives, so the audio thread may keep the pointer. Returns nullptr if the lock is busy (audio thread).
+        Settings* settingsFor (const void* track, const juce::ARARegionSequence* seq, const float* initial, bool mayWait);
+        // where the song is: written by whichever instance plays, read by the editor's
+        std::atomic<double> songTime { -1.0 };
+        std::atomic<bool> playing { false };
 
     protected:
         void willBeginEditing (juce::ARADocument*) override { editLock.enterWrite(); }
         void didEndEditing (juce::ARADocument*) override    { editLock.exitWrite(); }
         juce::ARAPlaybackRenderer* doCreatePlaybackRenderer() noexcept override { return new PlaybackRenderer (getDocumentController(), *this); }
         // nothing of Duality's own is stored in the project yet (the words and their effects will be)
-        bool doRestoreObjectsFromStream (juce::ARAInputStream&, const juce::ARARestoreObjectsFilter*) noexcept override { return true; }
-        bool doStoreObjectsToStream (juce::ARAOutputStream&, const juce::ARAStoreObjectsFilter*) noexcept override { return true; }
+        bool doRestoreObjectsFromStream (juce::ARAInputStream&, const juce::ARARestoreObjectsFilter*) noexcept override;
+        bool doStoreObjectsToStream (juce::ARAOutputStream&, const juce::ARAStoreObjectsFilter*) noexcept override;
 
     private:
         juce::ScopedTryReadLock getProcessingLock() override { return juce::ScopedTryReadLock { editLock }; }
         juce::ReadWriteLock editLock;
+        std::mutex settingsMutex;
+        std::map<const void*, std::unique_ptr<Settings>> byTrack;
+        std::map<const void*, std::array<float, numShared>> restored;   // from the project: by audio modification
     };
 }
 

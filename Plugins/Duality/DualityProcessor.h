@@ -4,6 +4,7 @@
 #include "VocalPlate.h"
 #include "DualityARA.h"
 #include <mutex>
+#include <array>
 
 // Duality: the vocal plate, and the words.
 //   Object  - the plate on the whole vocal (the Plate section)
@@ -98,6 +99,17 @@ private:
     juce::ThreadPool peakPool { 1 };   // (last: it is gone, its job finished, before the things the job uses)
 
     std::atomic<float> *pDecay, *pDamp, *pPre, *pLow, *pHigh, *pDuck, *pPersp, *pWidth, *pMix, *pOutput;
+    // the same ten, always this instance's own knobs (pDecay... point at the track's shared settings while Duality plays an ARA track)
+    std::array<std::atomic<float>*, 10> own {};
+    void pointParamsAt (std::array<std::atomic<float>*, 10>);
+   #if JucePlugin_Enable_ARA
+    DualityARA::DocumentController* araDoc = nullptr;   // the document of this instance (audio thread's copy)
+    const void* araTrack = nullptr;                     // the track this instance plays
+    DualityARA::Settings* araSettings = nullptr;
+    // the editor's side: which track it shows, and the settings as last agreed between its knobs and the document
+    const void* editTrack = nullptr;
+    std::array<float, 10> mirror {};
+   #endif
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (DualityProcessor)
 };
