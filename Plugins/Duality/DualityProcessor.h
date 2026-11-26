@@ -114,10 +114,7 @@ private:
     juce::AudioPlayHead::PositionInfo blockPos;
     bool wordsBound = false;
     int testGates = -1;   // the offline tests: every sample is a marked word with these effects (DUALITY_TEST_GATES)
-    VocalPlate throwPlate;
-    std::vector<float> throwSend, echoSend, throwPreBuf, fxL, fxR;
-    int throwPreW = 0;
-    float throwEnv = 0, echoEnv = 0, throwRet = 0, echoRet = 0, throwToneLP[2] {}, throwToneHP[2] {}, throwHPz = 0;
+    // each effect has a few voices: a marked word plays in one with its own settings, so tails with different settings overlap
     struct Echo
     {
         std::vector<float> l, r; int w = 0;
@@ -125,7 +122,27 @@ private:
         float lp[2] {}, hp[2] {}, wow = 0;
         void prepare (int maxSamples) { l.assign ((size_t) maxSamples, 0.0f); r.assign ((size_t) maxSamples, 0.0f); w = 0; time = 0; lp[0] = lp[1] = hp[0] = hp[1] = 0; }
         float read (const std::vector<float>& b, float d) const;
-    } echo;
+    };
+    struct ThrowVoice
+    {
+        VocalPlate plate;
+        std::vector<float> send, pre, outL, outR;
+        int preW = 0;
+        float env = 0, hpz = 0, lp[2] {}, hp[2] {};
+        std::array<float, 8> set {};   // the settings of the word that fed it last
+        bool used = false;              // (a voice no word has fed yet stays silent and costs nothing)
+    };
+    struct EchoVoice
+    {
+        Echo echo;
+        std::vector<float> send;
+        float env = 0;
+        std::array<float, 8> set {};
+        bool used = false;
+    };
+    std::array<ThrowVoice, DualityParams::voices> throwVoices;
+    std::array<EchoVoice, DualityParams::voices> echoVoices;
+    float fxRet = 0;
     double fxSampleRate = 48000.0;
    #if JucePlugin_Enable_ARA
     DualityARA::DocumentController* araDoc = nullptr;   // the document of this instance (audio thread's copy)

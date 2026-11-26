@@ -155,14 +155,22 @@ void DualityProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     prepareToPlayForARA (sampleRate, samplesPerBlock, getMainBusNumOutputChannels(), getProcessingPrecision());
    #endif
     send.assign ((size_t) samplesPerBlock, 0.0f);
-    // the words' effects
+    // the words' effects: their voices
     fxSampleRate = sampleRate;
-    throwPlate.prepare (sampleRate, 1.4f);
-    for (auto* v : { &throwSend, &echoSend, &fxL, &fxR }) v->assign ((size_t) samplesPerBlock, 0.0f);
-    throwPreBuf.assign ((size_t) (0.3 * sampleRate) + 4, 0.0f); throwPreW = 0;
-    echo.prepare ((int) (4.5 * sampleRate));
-    throwEnv = echoEnv = throwRet = echoRet = throwHPz = 0.0f;
-    for (int c = 0; c < 2; ++c) throwToneLP[c] = throwToneHP[c] = 0.0f;
+    for (auto& v : throwVoices)
+    {
+        v.plate.prepare (sampleRate, 1.4f);
+        for (auto* b : { &v.send, &v.outL, &v.outR }) b->assign ((size_t) samplesPerBlock, 0.0f);
+        v.pre.assign ((size_t) (0.3 * sampleRate) + 4, 0.0f); v.preW = 0;
+        v.env = v.hpz = 0; v.lp[0] = v.lp[1] = v.hp[0] = v.hp[1] = 0; v.used = false;
+    }
+    for (auto& v : echoVoices)
+    {
+        v.echo.prepare ((int) (4.5 * sampleRate));
+        v.send.assign ((size_t) samplesPerBlock, 0.0f);
+        v.env = 0; v.used = false;
+    }
+    fxRet = 0;
     setLatencySamples (0);
 }
 
@@ -244,20 +252,28 @@ void DualityProcessor::processBlock (AudioBuffer<float>& buffer, MidiBuffer&)
 
 //==============================================================================
 // The words' effects. Each marked word feeds its effects while it is sung (with a breath before and after, so its
-// consonants are in): Throw into a plate of its own, Echo into a delay; their tails ring on past the word.
+// consonants are in), each in a voice of its own with the word's own settings: Throw into a plate, Echo into a delay;
+// their tails ring on past the word, and a word's tail goes on while the next marked words start in other voices.
 void DualityProcessor::wordSends (const AudioBuffer<float>& dry, int n)
 {
-    if ((int) throwSend.size() < n) for (auto* v : { &throwSend, &echoSend, &fxL, &fxR }) v->resize ((size_t) n, 0.0f);   // (a host that grew the block)
-    std::fill (throwSend.begin(), throwSend.begin() + n, 0.0f);
-    std::fill (echoSend.begin(), echoSend.begin() + n, 0.0f);
+    using namespace DualityParams;
+    for (auto& v : throwVoices)
+    {
+        if ((int) v.send.size() < n) for (auto* b : { &v.send, &v.outL, &v.outR }) b->resize ((size_t) n, 0.0f);   // (a host that grew the block)
+        std::fill (v.send.begin(), v.send.begin() + n, 0.0f);
+    }
+    for (auto& v : echoVoices)
+    {
+        if ((int) v.send.size() < n) v.send.resize ((size_t) n, 0.0f);
+        std::fill (v.send.begin(), v.send.begin() + n, 0.0f);
+    }
    #if JucePlugin_Enable_ARA
     auto* renderer = getPlaybackRenderer<DualityARA::PlaybackRenderer>();
-    const bool playing = blockPos.getIsPlaying();
-    if (renderer != nullptr && araDoc != nullptr && playing)
+    if (renderer != nullptr && araDoc != nullptr && blockPos.getIsPlaying() && testGates < 0)
     {
         const int64 s0 = blockPos.getTimeInSamples().orFallback (0);
         const double rate = fxSampleRate;
-        // where each marked word is in this block: 1 in the gates (throwSend, echoSend) while it sounds
+        // where each marked word is in this block: 1 in its voices' gates (their send buffers, for now) while it sounds
         for (auto* region : renderer->getPlaybackRegions())
         {
             const auto onTimeline = region->getSampleRange (rate, ARAPlaybackRegion::IncludeHeadAndTail::no);
@@ -268,40 +284,52 @@ void DualityProcessor::wordSends (const AudioBuffer<float>& dry, int n)
             const double startInSource = region->getStartInAudioModificationTime();
             const double before = 0.03, after = 0.08;
             const double tFirst = (double) (block.getStart() - onTimeline.getStart()) / rate + startInSource;
-            // the first mark that may still sound at the block's start
-            auto it = std::lower_bound (marks->begin(), marks->end(), tFirst - after, [] (const auto& m, double t) { return m.t1 < t; });
-            for (int64 smp = block.getStart(); smp < block.getEnd(); ++smp)
+            const double tLast = (double) (block.getEnd() - onTimeline.getStart()) / rate + startInSource;
+            auto first = std::lower_bound (marks->begin(), marks->end(), tFirst - after, [] (const auto& m, double t) { return m.t1 < t; });
+            for (auto m = first; m != marks->end() && m->t0 - before <= tLast; ++m)
             {
-                const double t = (double) (smp - onTimeline.getStart()) / rate + startInSource;
-                while (it != marks->end() && it->t1 + after < t) ++it;
-                for (auto m = it; m != marks->end() && m->t0 - before <= t; ++m)
+                // the samples of this block where the word sounds
+                const int64 a = jmax (block.getStart(), onTimeline.getStart() + (int64) std::ceil ((m->t0 - before - startInSource) * rate));
+                const int64 b = jmin (block.getEnd(), onTimeline.getStart() + (int64) std::ceil ((m->t1 + after - startInSource) * rate));
+                if (a >= b) continue;
+                if (m->effects >> throwFx & 1)
                 {
-                    if (t > m->t1 + after) continue;
-                    const int i = (int) (smp - s0);
-                    if (m->effects >> DualityParams::throwFx & 1) throwSend[(size_t) i] = 1.0f;
-                    if (m->effects >> DualityParams::echoFx & 1) echoSend[(size_t) i] = 1.0f;
+                    auto& v = throwVoices[(size_t) m->throwVoice];
+                    std::fill (v.send.begin() + (a - s0), v.send.begin() + (b - s0), 1.0f);
+                    v.set = m->thr; v.used = true;
+                }
+                if (m->effects >> echoFx & 1)
+                {
+                    auto& v = echoVoices[(size_t) m->echoVoice];
+                    std::fill (v.send.begin() + (a - s0), v.send.begin() + (b - s0), 1.0f);
+                    v.set = m->echo; v.used = true;
                 }
             }
         }
     }
    #endif
-    if (testGates >= 0)
-        for (int i = 0; i < n; ++i)
-        {
-            throwSend[(size_t) i] = (testGates >> DualityParams::throwFx & 1) ? 1.0f : 0.0f;
-            echoSend[(size_t) i] = (testGates >> DualityParams::echoFx & 1) ? 1.0f : 0.0f;
-        }
+    if (testGates >= 0)   // (the offline tests: every sample a marked word, in the first voices, with the knobs' settings)
+    {
+        auto& t = throwVoices[0]; auto& e = echoVoices[0];
+        for (int k = 0; k < numThrow; ++k) t.set[(size_t) k] = P (throwSet[k]);
+        for (int k = 0; k < numEcho; ++k) e.set[(size_t) k] = P (echoSet[k]);
+        if (testGates >> throwFx & 1) { std::fill (t.send.begin(), t.send.begin() + n, 1.0f); t.used = true; }
+        if (testGates >> echoFx & 1)  { std::fill (e.send.begin(), e.send.begin() + n, 1.0f); e.used = true; }
+    }
     // the gates open in 5 ms and close in 40 ms, and carry the voice
     const float* l = dry.getReadPointer (0); const float* r = dry.getReadPointer (1);
-    const float a = 1.0f - std::exp (-1.0f / (0.005f * (float) fxSampleRate)), rel = 1.0f - std::exp (-1.0f / (0.040f * (float) fxSampleRate));
-    for (int i = 0; i < n; ++i)
+    const float att = 1.0f - std::exp (-1.0f / (0.005f * (float) fxSampleRate)), rel = 1.0f - std::exp (-1.0f / (0.040f * (float) fxSampleRate));
+    auto gate = [&] (std::vector<float>& send, float& env)
     {
-        const float v = 0.5f * (l[i] + r[i]);
-        throwEnv += (throwSend[(size_t) i] > throwEnv ? a : rel) * (throwSend[(size_t) i] - throwEnv);
-        echoEnv += (echoSend[(size_t) i] > echoEnv ? a : rel) * (echoSend[(size_t) i] - echoEnv);
-        throwSend[(size_t) i] = v * throwEnv;
-        echoSend[(size_t) i] = v * echoEnv;
-    }
+        for (int i = 0; i < n; ++i)
+        {
+            const float g = send[(size_t) i];
+            env += (g > env ? att : rel) * (g - env);
+            send[(size_t) i] = 0.5f * (l[i] + r[i]) * env;
+        }
+    };
+    for (auto& v : throwVoices) if (v.used) gate (v.send, v.env);
+    for (auto& v : echoVoices)  if (v.used) gate (v.send, v.env);
 }
 
 float DualityProcessor::Echo::read (const std::vector<float>& b, float d) const
@@ -328,58 +356,68 @@ void DualityProcessor::wordReturns (AudioBuffer<float>& out, int n)
         hpHz = (float) (40.0 * std::pow (2.0, jmax (0.0f, t) * 4.0));                        // bright: up to ~640 Hz
     };
     auto coef = [rate] (float hz) { return 1.0f - (float) std::exp (-MathConstants<double>::twoPi * hz / rate); };
+    // (the returns fade in and out with the perspective, all voices together)
+    const float retStart = fxRet;
+    float retEnd = fxRet;
+    for (int i = 0; i < n; ++i) retEnd += fade * ((on ? 1.0f : 0.0f) - retEnd);
+    auto ret = [&] (int i) { return retStart + (retEnd - retStart) * (float) (i + 1) / (float) n; };
+    fxRet = retEnd;
 
     // Throw: pre-delay, then its own plate (Size, Decay, or Freeze: a tail that hangs on), then its Tone
+    for (auto& v : throwVoices)
     {
-        const int pre = jlimit (0, (int) throwPreBuf.size() - 2, (int) (P (tpre) * 0.001 * rate));
+        if (! v.used) continue;
+        const auto& st = v.set;   // freeze, decay, pre-delay, size, tone, amount
+        const int pre = jlimit (0, (int) v.pre.size() - 2, (int) (st[2] * 0.001 * rate));
         const float hpc = coef (150.0f);
         for (int i = 0; i < n; ++i)
         {
-            throwPreBuf[(size_t) throwPreW] = throwSend[(size_t) i];
-            int rd = throwPreW - pre; if (rd < 0) rd += (int) throwPreBuf.size();
-            if (++throwPreW >= (int) throwPreBuf.size()) throwPreW = 0;
-            const float x = throwPreBuf[(size_t) rd];
-            throwHPz += hpc * (x - throwHPz);
-            throwSend[(size_t) i] = x - throwHPz;   // no rumble into the throw
+            v.pre[(size_t) v.preW] = v.send[(size_t) i];
+            int rd = v.preW - pre; if (rd < 0) rd += (int) v.pre.size();
+            if (++v.preW >= (int) v.pre.size()) v.preW = 0;
+            const float x = v.pre[(size_t) rd];
+            v.hpz += hpc * (x - v.hpz);
+            v.send[(size_t) i] = x - v.hpz;   // no rumble into the throw
         }
-        const float decay = P (tfreeze) > 0.5f ? 25.0f : P (tdecay);
-        throwPlate.setSize (P (tsize));
-        throwPlate.setParameters (decay, 0.35f);
-        throwPlate.process (throwSend.data(), fxL.data(), fxR.data(), n);
-        float lpHz, hpHz; tone (P (ttone), lpHz, hpHz);
+        const float decay = st[0] > 0.5f ? 25.0f : jlimit (0.5f, 20.0f, st[1]);
+        v.plate.setSize (jlimit (0.6f, 1.4f, st[3]));
+        v.plate.setParameters (decay, 0.35f);
+        v.plate.process (v.send.data(), v.outL.data(), v.outR.data(), n);
+        float lpHz, hpHz; tone (st[4], lpHz, hpHz);
         const float lc = coef (lpHz), hc = coef (hpHz);
-        const float g = P (tamt) * 1.6f * std::pow (2.2f / jmin (decay, 12.0f), 0.25f);
+        const float g = jlimit (0.0f, 1.0f, st[5]) * 1.6f * std::pow (2.2f / jmin (decay, 12.0f), 0.25f);
         for (int i = 0; i < n; ++i)
         {
-            throwRet += fade * ((on ? 1.0f : 0.0f) - throwRet);
-            float* ch[2] = { &fxL[(size_t) i], &fxR[(size_t) i] };
+            float x[2] = { v.outL[(size_t) i], v.outR[(size_t) i] };
             for (int c = 0; c < 2; ++c)
             {
-                float x = *ch[c];
-                throwToneLP[c] += lc * (x - throwToneLP[c]); x = throwToneLP[c];
-                throwToneHP[c] += hc * (x - throwToneHP[c]); x -= throwToneHP[c];
-                *ch[c] = x;
+                v.lp[c] += lc * (x[c] - v.lp[c]); x[c] = v.lp[c];
+                v.hp[c] += hc * (x[c] - v.hp[c]); x[c] -= v.hp[c];
             }
-            oL[i] += fxL[(size_t) i] * g * throwRet * og;
-            oR[i] += fxR[(size_t) i] * g * throwRet * og;
+            const float k = g * ret (i) * og;
+            oL[i] += x[0] * k; oR[i] += x[1] * k;
         }
     }
 
     // Echo: a delay in note values of the song's tempo (Sync) or in ms; Tape (darkening, a little wow, it bends
     // when its time moves), Digital (clean), or Ping-Pong (the repeats cross from side to side)
+    const double bpm = jlimit (20.0, 400.0, blockPos.getBpm().orFallback (120.0));
+    for (auto& v : echoVoices)
     {
-        const int type = roundToInt (P (etype));
-        const double bpm = blockPos.getBpm().orFallback (120.0);
-        const int note = jlimit (0, numNotes - 1, roundToInt (P (enote)));
-        double seconds = P (esync) > 0.5f ? noteQuarters[note] * 60.0 / jlimit (20.0, 400.0, bpm) : P (etime) * 0.001;
+        if (! v.used) continue;
+        auto& echo = v.echo;
+        const auto& st = v.set;   // sync, time ms, note, feedback, type, tone, amount
+        const int type = jlimit (0, 2, roundToInt (st[4]));
+        const int note = jlimit (0, numNotes - 1, roundToInt (st[2]));
+        const double seconds = st[0] > 0.5f ? noteQuarters[note] * 60.0 / bpm : jlimit (20.0f, 2000.0f, st[1]) * 0.001;
         const float target = (float) jlimit (16.0, (double) echo.l.size() - 8.0, seconds * rate);
         if (echo.time <= 0.0f) echo.time = target;
         const float glide = type == 0 ? 1.0f - std::exp (-1.0f / (0.25f * (float) rate)) : 1.0f - std::exp (-1.0f / (0.02f * (float) rate));
-        const float fb = P (efb);
-        float lpHz, hpHz; tone (P (etone), lpHz, hpHz);
+        const float fb = jlimit (0.0f, 0.95f, st[3]);
+        float lpHz, hpHz; tone (st[5], lpHz, hpHz);
         if (type == 0) lpHz = jmin (lpHz, 5500.0f);   // tape: every repeat a little darker
         const float lc = coef (lpHz), hc = coef (hpHz);
-        const float amt = P (eamt);
+        const float amt = jlimit (0.0f, 1.0f, st[6]);
         const float wowInc = (float) (MathConstants<double>::twoPi * 0.55 / rate), wowDepth = (float) (0.00018 * rate);
         const int size = (int) echo.l.size();
         for (int i = 0; i < n; ++i)
@@ -387,7 +425,7 @@ void DualityProcessor::wordReturns (AudioBuffer<float>& out, int n)
             echo.time += glide * (target - echo.time);
             float d = echo.time;
             if (type == 0) { echo.wow += wowInc; if (echo.wow > MathConstants<float>::twoPi) echo.wow -= MathConstants<float>::twoPi; d += wowDepth * std::sin (echo.wow); }
-            float yl = echo.read (echo.l, d), yr = echo.read (echo.r, d);
+            const float yl = echo.read (echo.l, d), yr = echo.read (echo.r, d);
             // the repeats' colour, in the feedback: each one passes the tone again
             float f[2] = { yl, yr };
             for (int c = 0; c < 2; ++c)
@@ -396,13 +434,12 @@ void DualityProcessor::wordReturns (AudioBuffer<float>& out, int n)
                 echo.hp[c] += hc * (f[c] - echo.hp[c]); f[c] -= echo.hp[c];
                 if (type == 0) f[c] = std::tanh (1.3f * f[c]) / 1.3f;
             }
-            const float x = echoSend[(size_t) i];
+            const float x = v.send[(size_t) i];
             if (type == 2) { echo.l[(size_t) echo.w] = x + fb * f[1]; echo.r[(size_t) echo.w] = fb * f[0]; }
             else           { echo.l[(size_t) echo.w] = x + fb * f[0]; echo.r[(size_t) echo.w] = x + fb * f[1]; }
             if (++echo.w >= size) echo.w = 0;
-            echoRet += fade * ((on ? 1.0f : 0.0f) - echoRet);
-            oL[i] += yl * amt * echoRet * og;
-            oR[i] += yr * amt * echoRet * og;
+            const float k = amt * ret (i) * og;
+            oL[i] += yl * k; oR[i] += yr * k;
         }
     }
 }
@@ -654,7 +691,7 @@ WordsView DualityProcessor::getWordsView()
             const auto& w = words.words[(size_t) i];
             if (w.t1 <= startInSource || w.t0 >= end) continue;
             WordsView::Word x; x.text = w.text; x.t0 = w.t0 - startInSource; x.t1 = w.t1 - startInSource;
-            x.confidence = w.confidence; x.selected = w.selected; x.id = i; x.effects = w.effects;
+            x.confidence = w.confidence; x.selected = w.selected; x.id = i; x.effects = w.effects; x.echoSet = w.echo; x.throwSet = w.thr;
             v.words.push_back (x);
         }
         {   // the effects' times, for their tails in the window
@@ -663,6 +700,7 @@ WordsView DualityProcessor::getWordsView()
             const int note = jlimit (0, numNotes - 1, roundToInt (own1 (enote)));
             v.echoSeconds = own1 (esync) > 0.5f ? noteQuarters[note] * 60.0 / jlimit (20.0, 400.0, doc->bpm.load()) : own1 (etime) * 0.001;
             v.throwSeconds = own1 (tfreeze) > 0.5f ? 12.0 : own1 (tdecay);
+            v.bpm = doc->bpm.load();
         }
         auto pc = [] (float p) { return String (roundToInt (jlimit (0.0f, 1.0f, p) * 100.0f)) + "%"; };
         switch (words.state)
@@ -731,7 +769,8 @@ void DualityProcessor::wordsAction (const WordsAction& a)
         case WordsAction::edit:       doc->editWord (source, a.first, a.text); break;
         case WordsAction::remove:     doc->removeWords (source, a.first, a.last); break;
         case WordsAction::transcribe: doc->hear (source, true); break;
-        case WordsAction::effect:     doc->setEffect (source, a.first, a.last != 0, from, to); break;
+        case WordsAction::effect:     doc->setEffect (source, a.first, a.last != 0, from, to, a.values); break;
+        case WordsAction::settings:   doc->setWordSettings (source, a.first, from, to, a.values); break;
         case WordsAction::lyrics:     doc->placeLyrics (source, a.text); break;
         case WordsAction::locate:
             if (auto* pc = doc->getDocumentController()->getHostPlaybackController())

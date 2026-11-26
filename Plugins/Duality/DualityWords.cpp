@@ -306,7 +306,7 @@ std::vector<Word> placeLyrics (const std::vector<Word>& heard, const String& lyr
             auto& h = heard[(size_t) match[(size_t) i]];
             out[(size_t) i].t0 = h.t0; out[(size_t) i].t1 = h.t1;
             out[(size_t) i].confidence = like[(size_t) i] >= 0.99f ? 1.0f : 0.45f;   // a near-miss: placed, worth a look
-            out[(size_t) i].effects = h.effects; out[(size_t) i].selected = h.selected;
+            out[(size_t) i].effects = h.effects; out[(size_t) i].selected = h.selected; out[(size_t) i].echo = h.echo; out[(size_t) i].thr = h.thr;
         }
     // the lyrics' words nobody heard: between their placed neighbours, sharing the time by length
     for (int i = 0; i < L;)

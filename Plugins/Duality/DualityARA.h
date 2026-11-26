@@ -109,11 +109,18 @@ namespace DualityARA
         void editWord (juce::ARAAudioSource*, int index, const juce::String& text);   // "" removes it; "two words" splits it
         void removeWords (juce::ARAAudioSource*, int first, int last);
         void placeLyrics (juce::ARAAudioSource*, const juce::String& lyrics);
-        void setEffect (juce::ARAAudioSource*, int effect, bool on, double from, double to);   // on the selected words in [from, to]
+        // on the selected words in [from, to]: an effect on (with these settings) or off; or new settings for those that have it
+        void setEffect (juce::ARAAudioSource*, int effect, bool on, double from, double to, const std::vector<float>& settings);
+        void setWordSettings (juce::ARAAudioSource*, int effect, double from, double to, const std::vector<float>& settings);
        #endif
 
         // the marked words of a recording, for the audio thread: [t0, t1) in the recording's time, and the effects on them
-        struct Mark { double t0, t1; int effects; };
+        struct Mark
+        {
+            double t0, t1; int effects;
+            int throwVoice = 0, echoVoice = 0;      // the voice its tail rings in (words in turn, so neighbours overlap)
+            std::array<float, 8> echo {}, thr {};   // its own settings
+        };
         using Marks = std::vector<Mark>;
         // (audio thread: never waits; an empty pointer if the words are being changed this very moment)
         std::shared_ptr<const Marks> marksOf (const std::string& sourceID);

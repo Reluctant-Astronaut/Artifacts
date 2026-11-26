@@ -1,4 +1,5 @@
 #pragma once
+#include <array>
 
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <juce_dsp/juce_dsp.h>
@@ -15,11 +16,13 @@ struct IRInfo
 struct WordsView
 {
     bool ara = false;                 // bound to an event (otherwise the window shows its demo line)
-    struct Word { juce::String text; double t0 = 0, t1 = 0; float confidence = 1.0f; bool selected = false, editing = false; int id = -1; int effects = 0; };
+    struct Word { juce::String text; double t0 = 0, t1 = 0; float confidence = 1.0f; bool selected = false, editing = false; int id = -1; int effects = 0;
+                  std::array<float, 8> echoSet {}, throwSet {}; };   // (Duality: the word's own effect settings)
     std::vector<Word> words;          // the event's words, at their times in the event (seconds)
     float progress = -1.0f;           // transcribing: 0..1 (the words come in as they are heard); -1 when not
     juce::String status;              // instead of the word count: what the listening is doing, or what went wrong
     double echoSeconds = 0.25, throwSeconds = 4.0;   // the effects' times now, to draw their tails
+    double bpm = 120.0;                // the song's tempo (Duality: a word's echo in note values)
     juce::String track, clip;         // the track's and the event's names
     std::vector<float> peaks;         // the event's waveform, one peak per 10 ms, 0..1 (empty while it is read)
     double length = 0.0;              // seconds
@@ -30,10 +33,11 @@ struct WordsView
 // What the Words window asks of the vocal's words (ids are WordsView::Word::id)
 struct WordsAction
 {
-    enum Kind { select, edit, remove, transcribe, lyrics, locate, effect } kind = select;
+    enum Kind { select, edit, remove, transcribe, lyrics, locate, effect, settings } kind = select;
     int first = -1, last = -1;        // select: the range (-1: none); edit: first; remove: the range; effect: first = which, last = on (1) / off (0)
     juce::String text;                // edit: the new text ("" removes the word); lyrics: the lyrics
     double time = 0.0;                // locate: seconds into the event
+    std::vector<float> values;        // effect (on) / settings: the effect's settings for the words (settings: first = which effect)
 };
 
 // The common face of all four Artifacts plugins: the parameter tree, and the numbers the shared

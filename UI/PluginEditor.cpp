@@ -1,4 +1,5 @@
 #include "PluginEditor.h"
+#include "../Plugins/Duality/DualityShared.h"
 #include "KintsugiGlyphs.h"
 #include "BinaryData.h"
 
@@ -2227,7 +2228,8 @@ void WordsWindow::paintLive (juce::Graphics& g)
                 if (wd.effects & 1)
                 {
                     tag << "THROW";
-                    const float e1 = xAt (wd.t1 + jmin (3.0, view.throwSeconds * 0.5));
+                    const double thrSec = wd.throwSet[0] > 0.5f ? 12.0 : (wd.throwSet[1] > 0.0f ? (double) wd.throwSet[1] : view.throwSeconds);
+                    const float e1 = xAt (wd.t1 + jmin (3.0, thrSec * 0.5));
                     Path p; p.startNewSubPath (b, cy - maxA * 0.8f); p.quadraticTo (b + (e1 - b) * 0.3f, cy - maxA * 0.2f, e1, cy);
                     p.quadraticTo (b + (e1 - b) * 0.3f, cy + maxA * 0.2f, b, cy + maxA * 0.8f); p.closeSubPath();
                     g.setGradientFill (ColourGradient (ox.withAlpha (0.30f), b, cy, ox.withAlpha (0.0f), e1, cy, false));
@@ -2236,9 +2238,13 @@ void WordsWindow::paintLive (juce::Graphics& g)
                 if (wd.effects & 2)
                 {
                     tag << (tag.isNotEmpty() ? String::fromUTF8 (" \xc2\xb7 ") : String()) << "ECHO";
+                    const int note = jlimit (0, DualityParams::numNotes - 1, roundToInt (wd.echoSet[2]));
+                    double echoSec = wd.echoSet[0] > 0.5f ? DualityParams::noteQuarters[note] * 60.0 / jlimit (20.0, 400.0, view.bpm)
+                                                          : (double) wd.echoSet[1] * 0.001;
+                    if (echoSec <= 0.01) echoSec = view.echoSeconds;
                     for (int k = 1; k <= 3; ++k)
                     {
-                        const float off = xAt (wd.t0 + view.echoSeconds * k) - a, h = maxA * 0.7f * std::pow (0.6f, (float) k);
+                        const float off = xAt (wd.t0 + echoSec * k) - a, h = maxA * 0.7f * std::pow (0.6f, (float) k);
                         g.setColour (ox.withAlpha (0.45f * std::pow (0.65f, (float) k)));
                         g.drawRoundedRectangle (Rectangle<float> (a + off, cy - h, jmax (3.0f, b - a), 2.0f * h), 2.0f, 1.0f);
                     }
@@ -3666,6 +3672,7 @@ ArtifactsEditor::ArtifactsEditor (ArtifactsProcessor& p)
             if (any && wordsWindow.live)   // on the selected words (or off again)
             {
                 WordsAction a; a.kind = WordsAction::effect; a.first = k; a.last = (applyKeys.onMask >> k) & 1;
+                a.values = wordsKnobValues (k);   // a word new to the effect starts with the settings used last
                 proc.wordsAction (a);
                 auto v = proc.getWordsView();
                 if (v.ara) wordsWindow.setView (std::move (v));
@@ -3904,6 +3911,58 @@ void ArtifactsEditor::toggleParam (const juce::String& slot)
     }
 }
 
+std::vector<float> ArtifactsEditor::wordsKnobValues (int effect) const
+{
+    std::vector<float> v;
+    auto add = [&] (const DualityParams::Index* ids, int count)
+    {
+        for (int i = 0; i < count; ++i)
+            if (auto* p = proc.apvts.getRawParameterValue (DualityParams::sharedIDs[ids[i]])) v.push_back (p->load());
+    };
+    if (effect == DualityParams::echoFx) add (DualityParams::echoSet, DualityParams::numEcho);
+    if (effect == DualityParams::throwFx) add (DualityParams::throwSet, DualityParams::numThrow);
+    return v;
+}
+
+void ArtifactsEditor::syncWordSettings()
+{
+    using namespace DualityParams;
+    if (mockVariant != 3 || ! wordsWindow.live || (wordsPage != throwFx && wordsPage != echoFx)) { wordsKnobKey.clear(); return; }
+    // the selected words that have the effect on this page
+    juce::String key; key << wordsPage << ":";
+    const WordsView::Word* firstWord = nullptr;
+    for (auto& w : wordsWindow.view.words)
+        if (w.selected && (w.effects >> wordsPage & 1)) { key << w.id << ","; if (firstWord == nullptr) firstWord = &w; }
+    if (key != wordsKnobKey)
+    {
+        wordsKnobKey = key;
+        if (firstWord != nullptr)   // the knobs show the (first) selected word's own settings
+        {
+            const auto* ids = wordsPage == echoFx ? echoSet : throwSet;
+            const int count = wordsPage == echoFx ? numEcho : numThrow;
+            const auto& src = wordsPage == echoFx ? firstWord->echoSet : firstWord->throwSet;
+            for (int i = 0; i < count; ++i)
+                if (auto* p = proc.apvts.getParameter (sharedIDs[ids[i]]))
+                {
+                    const float n = p->convertTo0to1 (src[(size_t) i]);
+                    if (std::abs (p->getValue() - n) > 1.0e-5f) { p->beginChangeGesture(); p->setValueNotifyingHost (n); p->endChangeGesture(); }
+                }
+        }
+        wordsMirror = wordsKnobValues (wordsPage);
+        return;
+    }
+    if (firstWord == nullptr) return;   // (no such word selected: the knobs are the settings the next word will start with)
+    auto now = wordsKnobValues (wordsPage);
+    if (now != wordsMirror)   // a knob turned: the selected words take it
+    {
+        wordsMirror = now;
+        WordsAction a; a.kind = WordsAction::settings; a.first = wordsPage; a.values = now;
+        proc.wordsAction (a);
+        auto v = proc.getWordsView();
+        if (v.ara) wordsWindow.setView (std::move (v));
+    }
+}
+
 juce::String ArtifactsEditor::wordsPageTitle() const
 {
     static const char* names[] = { "Throw", "Echo", "Swell", "Double", "Harmony", "Shift" };
@@ -4133,6 +4192,7 @@ void ArtifactsEditor::timerCallback()
             noiseSwitch.setOn (nOn); noiseLamp.setGlow (tOn && nOn ? 1.0f : 0.0f);
             if (wordsPage == 1 && nOn != wordsSync) setWordsPage (1);   // Time: note values or ms
         }
+        syncWordSettings();
         if (wordsWindow.live)   // the Focus keys show the effects on the selected words
         {
             int mask = 0;

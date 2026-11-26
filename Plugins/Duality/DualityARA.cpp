@@ -118,7 +118,7 @@ bool DocumentController::doStoreObjectsToStream (ARAOutputStream& out, const ARA
             rows.push_back ({ m->getPersistentID(), x });
             break;
         }
-    bool ok = out.writeInt (3);   // format version (1: the settings only; 2: and the words; 3: and their effects)
+    bool ok = out.writeInt (4);   // format version (1: the settings only; 2: and the words; 3: and their effects; 4: and each word's settings)
     ok = ok && out.writeInt ((int) rows.size());
     for (auto& r : rows)
     {
@@ -144,6 +144,11 @@ bool DocumentController::doStoreObjectsToStream (ARAOutputStream& out, const ARA
         for (auto& wd : h.second)
             ok = ok && out.writeString (wd.text) && out.writeDouble (wd.t0) && out.writeDouble (wd.t1)
                     && out.writeFloat (wd.confidence) && out.writeBool (wd.selected) && out.writeInt (wd.effects);
+        for (auto& wd : h.second)
+        {
+            for (float f : wd.echo) ok = ok && out.writeFloat (f);
+            for (float f : wd.thr)  ok = ok && out.writeFloat (f);
+        }
     }
    #else
     ok = ok && out.writeInt (0);
@@ -155,7 +160,7 @@ bool DocumentController::doRestoreObjectsFromStream (ARAInputStream& in, const A
 {
     if (in.getNumBytesRemaining() <= 0) return true;   // a project from before Duality kept anything
     const int version = in.readInt();
-    if (version < 1 || version > 3) return true;
+    if (version < 1 || version > 4) return true;
     const int count = in.readInt();
     std::unique_lock<std::mutex> l (settingsMutex);
     for (int i = 0; i < count && ! in.failed(); ++i)
@@ -198,7 +203,19 @@ bool DocumentController::doRestoreObjectsFromStream (ARAInputStream& in, const A
                 ignoreUnused (text, t0, t1, conf, sel, fx);
                #endif
             }
+            if (version >= 4)   // each word's own settings, after the words
+                for (int k = 0; k < n && ! in.failed(); ++k)
+                {
+                    std::array<float, 8> e {}, t {};
+                    for (auto& f : e) f = in.readFloat();
+                    for (auto& f : t) f = in.readFloat();
+                   #if DUALITY_WORDS
+                    if (k < (int) ws.size()) { ws[(size_t) k].echo = e; ws[(size_t) k].thr = t; }
+                   #endif
+                }
            #if DUALITY_WORDS
+            if (version < 4)   // a project from before: its words take the defaults
+                for (auto& wd : ws) { wd.echo = DualityParams::defaultEchoSettings(); wd.thr = DualityParams::defaultThrowSettings(); }
             if (auto* src = filter->getAudioSourceToRestoreStateWithID<ARAAudioSource> (id.toRawUTF8()))
             {
                 std::lock_guard<std::mutex> w (wordsMutex);
@@ -358,7 +375,7 @@ void DocumentController::editWord (ARAAudioSource* src, int index, const String&
     for (auto& x : now)
     {
         const double d = (old.t1 - old.t0) * (x.text.length() + 1) / (double) chars;
-        x.t0 = t; x.t1 = t + d * (now.size() > 1 ? 0.94 : 1.0); x.confidence = 1.0f; x.selected = old.selected; x.effects = old.effects; t += d;
+        x.t0 = t; x.t1 = t + d * (now.size() > 1 ? 0.94 : 1.0); x.confidence = 1.0f; x.selected = old.selected; x.effects = old.effects; x.echo = old.echo; x.thr = old.thr; t += d;
     }
     ws.insert (ws.begin() + index, now.begin(), now.end());
     publishMarks (src->getPersistentID());
@@ -389,13 +406,32 @@ void DocumentController::placeLyrics (ARAAudioSource* src, const String& lyrics)
     }
     hear (src, wordsOf (src).state == Hearing::failed);
 }
-void DocumentController::setEffect (ARAAudioSource* src, int effect, bool on, double from, double to)
+static void putSettings (DualityWords::Word& wd, int effect, const std::vector<float>& v)
+{
+    auto& dst = effect == DualityParams::echoFx ? wd.echo : wd.thr;
+    for (size_t i = 0; i < v.size() && i < dst.size(); ++i) dst[i] = v[i];
+}
+
+void DocumentController::setEffect (ARAAudioSource* src, int effect, bool on, double from, double to, const std::vector<float>& settings)
 {
     std::lock_guard<std::mutex> w (wordsMutex);
     auto& ws = wordsBySource[src->getPersistentID()].words;
     for (auto& wd : ws)
         if (wd.selected && wd.t1 > from && wd.t0 < to)
+        {
+            if (on && (wd.effects >> effect & 1) == 0) putSettings (wd, effect, settings);   // a new effect: the settings used last
             wd.effects = on ? (wd.effects | (1 << effect)) : (wd.effects & ~(1 << effect));
+        }
+    publishMarks (src->getPersistentID());
+}
+
+void DocumentController::setWordSettings (ARAAudioSource* src, int effect, double from, double to, const std::vector<float>& settings)
+{
+    std::lock_guard<std::mutex> w (wordsMutex);
+    auto& ws = wordsBySource[src->getPersistentID()].words;
+    for (auto& wd : ws)
+        if (wd.selected && wd.t1 > from && wd.t0 < to && (wd.effects >> effect & 1) != 0)
+            putSettings (wd, effect, settings);
     publishMarks (src->getPersistentID());
 }
 
@@ -405,7 +441,18 @@ void DocumentController::publishMarks (const std::string& id)
     auto it = wordsBySource.find (id);
     if (it != wordsBySource.end())
         for (auto& wd : it->second.words)
-            if (wd.effects != 0) m->push_back ({ wd.t0, wd.t1, wd.effects });
+            if (wd.effects != 0)
+            {
+                Mark mk; mk.t0 = wd.t0; mk.t1 = wd.t1; mk.effects = wd.effects; mk.echo = wd.echo; mk.thr = wd.thr;
+                m->push_back (mk);
+            }
+    // each effect's words take its voices in turn: a word's tail rings on while the next ones start
+    int nThrow = 0, nEcho = 0;
+    for (auto& mk : *m)
+    {
+        if (mk.effects >> DualityParams::throwFx & 1) mk.throwVoice = nThrow++ % DualityParams::voices;
+        if (mk.effects >> DualityParams::echoFx & 1)  mk.echoVoice = nEcho++ % DualityParams::voices;
+    }
     std::shared_ptr<const Marks> c = std::move (m);
     const SpinLock::ScopedLockType l (marksLock);
     auto& slot = marks[id];

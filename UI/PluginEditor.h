@@ -300,6 +300,11 @@ private:
     int wordsPage = 1;        // Duality: the effect whose settings the Words knobs show (DualityParams::Effect order)
     bool wordsSync = true;    // Echo: Time in note values (Sync) or in ms
     void setWordsPage (int effect);
+    // the Words knobs and the selected words' own settings: loaded when the selection (or page) changes, written back when a knob turns
+    juce::String wordsKnobKey;
+    std::vector<float> wordsMirror;
+    std::vector<float> wordsKnobValues (int effect) const;
+    void syncWordSettings();
     juce::String wordsPageTitle() const;
     int wordsTick = 0;
     bool previewLive = false;

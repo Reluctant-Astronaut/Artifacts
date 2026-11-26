@@ -8,6 +8,7 @@
 #include <juce_audio_basics/juce_audio_basics.h>
 #include <juce_core/juce_core.h>
 #include <atomic>
+#include <array>
 #include <functional>
 #include <vector>
 
@@ -22,6 +23,7 @@ namespace DualityWords
         float confidence = 1.0f;     // how sure the listening was (0..1); a word placed from the lyrics: how well it matched
         bool selected = false;
         int effects = 0;             // the Focus effects on it (bits: DualityParams::Effect)
+        std::array<float, 8> echo {}, thr {};   // its own Echo and Throw settings (DualityParams::echoSet / throwSet order)
     };
 
     // the listening model: where it lives on this computer, and fetching it once (about 190 MB)
