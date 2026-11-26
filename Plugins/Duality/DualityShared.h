@@ -25,7 +25,7 @@ namespace DualityParams
 
     // the settings a word starts with in a project from before words had their own (the parameters' defaults)
     inline std::array<float, 8> defaultEchoSettings()  { return { 1.0f, 375.0f, 5.0f, 0.35f, 0.0f, -0.3f, 0.5f, 0.0f }; }
-    inline std::array<float, 8> defaultThrowSettings() { return { 0.0f, 4.0f, 30.0f, 1.0f, 0.0f, 0.6f, 0.0f, 0.0f }; }
+    inline std::array<float, 8> defaultThrowSettings() { return { 0.0f, 3.5f, 40.0f, 1.25f, 0.0f, 0.7f, 0.0f, 0.0f }; }
 
     // echo times in note values (Sync): name and length in quarter notes
     inline const char* const noteNames[] { "1/32", "1/16T", "1/16", "1/16D", "1/8T", "1/8", "1/8D", "1/4T", "1/4", "1/4D", "1/2", "1/2D", "1/1" };

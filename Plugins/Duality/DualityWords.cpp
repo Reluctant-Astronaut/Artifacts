@@ -145,6 +145,44 @@ String cleanWord (const String& raw)
     return t.substring (a, b);
 }
 
+// Each word's start, moved back to where its sound begins: the quiet just before it (a breath, a gap, the dip between
+// two words) when there is one within 200 ms, so a word begins with its first consonant ("fly", not "-y")
+void refineStarts (std::vector<Word>& words, const std::vector<float>& a)
+{
+    const int hop = 160;   // 10 ms
+    const int frames = (int) (a.size() / (size_t) hop);
+    if (frames < 4) return;
+    std::vector<float> db ((size_t) frames);
+    for (int f = 0; f < frames; ++f)
+    {
+        double s = 0; for (int i = 0; i < hop; ++i) { const float x = a[(size_t) (f * hop + i)]; s += x * x; }
+        db[(size_t) f] = (float) (10.0 * std::log10 (s / hop + 1e-12));
+    }
+    // quiet: near the recording's own floor (a breath, the room), not just softer than the vowel - an "f" or "s" is
+    // 20-30 dB under its vowel and belongs to the word
+    auto sorted = db; std::sort (sorted.begin(), sorted.end());
+    const float floorDb = sorted[(size_t) (frames / 10)];
+    for (size_t w = 0; w < words.size(); ++w)
+    {
+        const int f0 = (int) std::floor (words[w].t0 * 100.0);
+        if (f0 <= 0 || f0 >= frames) continue;
+        float peak = -200.0f;
+        for (int f = f0; f < jmin (frames, f0 + 20); ++f) peak = jmax (peak, db[(size_t) f]);
+        const int lowest = jmax (0, jmax (f0 - 20, w > 0 ? (int) std::ceil (words[w - 1].t0 * 100.0) + 3 : 0));
+        const float quiet = jmax (peak - 40.0f, floorDb + 8.0f);
+        if (db[(size_t) f0] < quiet) continue;   // it already starts in the quiet before the word
+        // back to the last quiet frame (well under the word), where its sound begins; else the deepest dip on the way
+        int start = -1, dip = -1; float dipDb = peak - 6.0f;
+        for (int f = f0 - 1; f >= lowest; --f)
+        {
+            if (db[(size_t) f] < quiet) { start = f + 1; break; }
+            if (db[(size_t) f] < dipDb) { dipDb = db[(size_t) f]; dip = f; }
+        }
+        if (start < 0) start = dip;
+        if (start >= 0) words[w].t0 = jmin (words[w].t0, start * 0.01);
+    }
+}
+
 Ears::~Ears() { if (ctx != nullptr) whisper_free (ctx); }
 
 static void quietLog (ggml_log_level, const char*, void*) {}
@@ -157,6 +195,10 @@ bool Ears::load (String& error)
     if (! f.existsAsFile()) { error = "THE LISTENING MODEL IS MISSING"; return false; }
     auto cp = whisper_context_default_params();
     cp.use_gpu = true;   // Metal on a Mac with Apple Silicon; the processor otherwise
+    // where each word starts, from the model's attention (DTW): much closer than its own timestamps, which run late
+    cp.flash_attn = false;   // (DTW needs it off)
+    cp.dtw_token_timestamps = true;
+    cp.dtw_aheads_preset = WHISPER_AHEADS_SMALL_EN;
     ctx = whisper_init_from_file_with_params (f.getFullPathName().toRawUTF8(), cp);
     if (ctx == nullptr) { f.deleteFile(); error = "THE LISTENING MODEL WAS DAMAGED (IT WILL BE FETCHED AGAIN)"; return false; }
     return true;
@@ -211,15 +253,19 @@ std::vector<Word> Ears::hear (const std::vector<float>& audio, std::function<voi
             if (text.isEmpty()) continue;
             if (whisper_full_get_segment_no_speech_prob (ctx, i) > 0.85f) continue;
             float sum = 0; int n = 0;
+            int64_t dtw = -1;
             for (int k = 0; k < whisper_full_n_tokens (ctx, i); ++k)
             {
                 const auto d = whisper_full_get_token_data (ctx, i, k);
                 if (d.id >= eot) continue;
                 sum += d.p; ++n;
+                if (dtw < 0 && d.t_dtw >= 0) dtw = d.t_dtw;
             }
             Word w;
             w.text = text;
-            w.t0 = offset + whisper_full_get_segment_t0 (ctx, i) * 0.01;
+            const int64_t segT0 = whisper_full_get_segment_t0 (ctx, i);
+            // the start: the earlier of the two estimates (a late start loses the word's first consonants)
+            w.t0 = offset + (dtw >= 0 ? (double) jmin (dtw, segT0) : (double) segT0) * 0.01;
             w.t1 = offset + whisper_full_get_segment_t1 (ctx, i) * 0.01;
             if (w.t0 >= end) continue;   // (in the padding)
             w.t1 = jlimit (w.t0 + 0.05, jmax (w.t0 + 0.05, end), w.t1);
@@ -231,6 +277,7 @@ std::vector<Word> Ears::hear (const std::vector<float>& audio, std::function<voi
     }
     // in time order, never overlapping
     std::sort (words.begin(), words.end(), [] (auto& a, auto& b) { return a.t0 < b.t0; });
+    refineStarts (words, audio);
     for (size_t i = 1; i < words.size(); ++i)
         if (words[i].t0 < words[i - 1].t1) words[i - 1].t1 = jmax (words[i - 1].t0 + 0.02, words[i].t0);
     return words;

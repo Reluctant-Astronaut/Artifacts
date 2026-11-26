@@ -76,14 +76,14 @@ AudioProcessorValueTreeState::ParameterLayout DualityProcessor::createLayout()
     p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "etone", 1 }, "Echo Tone", NormalisableRange<float> (-1.0f, 1.0f, 0.001f), -0.3f, signedPct));
     p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "eamt", 1 }, "Echo Amount", unit, 0.5f, pct));
     p.push_back (std::make_unique<AudioParameterChoice> (ParameterID { "tfreeze", 1 }, "Throw Freeze", StringArray { "Off", "On" }, 0));
-    p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "tdecay", 1 }, "Throw Decay", skewed (0.5f, 20.0f, 4.0f), 4.0f,
+    p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "tdecay", 1 }, "Throw Decay", skewed (0.5f, 20.0f, 4.0f), 3.5f,
         AudioParameterFloatAttributes().withLabel ("s").withStringFromValueFunction ([] (float v, int) { return String (v, v < 10.0f ? 1 : 0) + " s"; })));
-    p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "tpre", 1 }, "Throw Pre-delay", skewed (0.0f, 250.0f, 50.0f), 30.0f,
+    p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "tpre", 1 }, "Throw Pre-delay", skewed (0.0f, 250.0f, 50.0f), 40.0f,
         AudioParameterFloatAttributes().withLabel ("ms").withStringFromValueFunction ([] (float v, int) { return String (roundToInt (v)) + " ms"; })));
-    p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "tsize", 1 }, "Throw Size", NormalisableRange<float> (0.6f, 1.4f, 0.001f), 1.0f,
+    p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "tsize", 1 }, "Throw Size", NormalisableRange<float> (0.6f, 1.4f, 0.001f), 1.25f,
         AudioParameterFloatAttributes().withStringFromValueFunction ([] (float v, int) { return String (roundToInt (v * 100.0f)) + " %"; })));
     p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "ttone", 1 }, "Throw Tone", NormalisableRange<float> (-1.0f, 1.0f, 0.001f), 0.0f, signedPct));
-    p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "tamt", 1 }, "Throw Amount", unit, 0.6f, pct));
+    p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "tamt", 1 }, "Throw Amount", unit, 0.7f, pct));
 
     p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "mix", 1 }, "Mix", unit, 0.25f, pct));
     p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "output", 1 }, "Output",
@@ -282,7 +282,7 @@ void DualityProcessor::wordSends (const AudioBuffer<float>& dry, int n)
             auto marks = araDoc->marksOf (region->getAudioModification()->getAudioSource()->getPersistentID());
             if (marks == nullptr || marks->empty()) continue;
             const double startInSource = region->getStartInAudioModificationTime();
-            const double before = 0.03, after = 0.08;
+            const double before = 0.06, after = 0.12;   // a breath before (its first consonant) and after (its last)
             const double tFirst = (double) (block.getStart() - onTimeline.getStart()) / rate + startInSource;
             const double tLast = (double) (block.getEnd() - onTimeline.getStart()) / rate + startInSource;
             auto first = std::lower_bound (marks->begin(), marks->end(), tFirst - after, [] (const auto& m, double t) { return m.t1 < t; });
@@ -369,7 +369,7 @@ void DualityProcessor::wordReturns (AudioBuffer<float>& out, int n)
         if (! v.used) continue;
         const auto& st = v.set;   // freeze, decay, pre-delay, size, tone, amount
         const int pre = jlimit (0, (int) v.pre.size() - 2, (int) (st[2] * 0.001 * rate));
-        const float hpc = coef (150.0f);
+        const float hpc = coef (250.0f);   // a throw is the word's air and body, not its chest
         for (int i = 0; i < n; ++i)
         {
             v.pre[(size_t) v.preW] = v.send[(size_t) i];
@@ -384,8 +384,10 @@ void DualityProcessor::wordReturns (AudioBuffer<float>& out, int n)
         v.plate.setParameters (decay, 0.35f);
         v.plate.process (v.send.data(), v.outL.data(), v.outR.data(), n);
         float lpHz, hpHz; tone (st[4], lpHz, hpHz);
+        lpHz = jmin (lpHz, 10000.0f);   // (no fizz at the top of the bloom)
         const float lc = coef (lpHz), hc = coef (hpHz);
-        const float g = jlimit (0.0f, 1.0f, st[5]) * 1.6f * std::pow (2.2f / jmin (decay, 12.0f), 0.25f);
+        // a throw blooms: at the default amount its tail is a few dB under the word itself
+        const float g = jlimit (0.0f, 1.0f, st[5]) * 3.2f * std::pow (2.2f / jmin (decay, 12.0f), 0.25f);
         for (int i = 0; i < n; ++i)
         {
             float x[2] = { v.outL[(size_t) i], v.outR[(size_t) i] };
@@ -438,7 +440,7 @@ void DualityProcessor::wordReturns (AudioBuffer<float>& out, int n)
             if (type == 2) { echo.l[(size_t) echo.w] = x + fb * f[1]; echo.r[(size_t) echo.w] = fb * f[0]; }
             else           { echo.l[(size_t) echo.w] = x + fb * f[0]; echo.r[(size_t) echo.w] = x + fb * f[1]; }
             if (++echo.w >= size) echo.w = 0;
-            const float k = amt * ret (i) * og;
+            const float k = 2.0f * amt * ret (i) * og;   // at the default (half) the first repeat about as loud as the word
             oL[i] += yl * k; oR[i] += yr * k;
         }
     }

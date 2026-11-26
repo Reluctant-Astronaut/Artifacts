@@ -30,6 +30,23 @@ int main (int argc, char** argv)
         std::cout << (ok ? "ALIGN OK" : "ALIGN WRONG") << "\n";
         return ok ? 0 : 1;
     }
+    if (argc > 1 && String (argv[1]) == "--starts")
+    {
+        // a word heard late: its "f" (quiet, 0.40-0.50 s) and vowel (0.50-0.90 s) after silence; the model says 0.60
+        std::vector<float> a (16000 * 2, 0.0f);
+        Random rng (1);
+        for (int i = 6400; i < 8000; ++i) a[(size_t) i] = 0.03f * (rng.nextFloat() * 2 - 1);
+        for (int i = 8000; i < 14400; ++i) a[(size_t) i] = 0.4f * std::sin (i * 0.12f);
+        // a second word joined to the first (no silence): a dip at 0.95 s, the model says 1.10
+        for (int i = 14400; i < 15200; ++i) a[(size_t) i] = 0.08f * std::sin (i * 0.12f);
+        for (int i = 15200; i < 24000; ++i) a[(size_t) i] = 0.4f * std::sin (i * 0.09f);
+        std::vector<DualityWords::Word> ws = { { "fly", 0.60, 0.90 }, { "away", 1.10, 1.50 } };
+        DualityWords::refineStarts (ws, a);
+        print (ws);
+        const bool ok = std::abs (ws[0].t0 - 0.40) < 0.03 && ws[1].t0 > 0.88 && ws[1].t0 < 0.97;
+        std::cout << (ok ? "STARTS OK" : "STARTS WRONG") << "\n";
+        return ok ? 0 : 1;
+    }
     if (argc < 2) { std::cerr << "usage: DualityListen <audio> [lyrics.txt] | --align\n"; return 2; }
 
     AudioFormatManager fm; fm.registerBasicFormats();

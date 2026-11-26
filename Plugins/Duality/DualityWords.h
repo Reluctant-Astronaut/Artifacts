@@ -51,6 +51,9 @@ namespace DualityWords
         JUCE_DECLARE_NON_COPYABLE (Ears)
     };
 
+    // each word's start moved back to where its sound begins (the quiet just before it, within 150 ms)
+    void refineStarts (std::vector<Word>& words, const std::vector<float>& audio16k);
+
     // the lyrics as written, placed on the heard words: matching words take the heard word's time, words not heard
     // share the time between their neighbours. Without heard words, the lyrics are spread over [start, end].
     std::vector<Word> placeLyrics (const std::vector<Word>& heard, const juce::String& lyrics, double start, double end);
