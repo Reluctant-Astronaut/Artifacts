@@ -27,9 +27,11 @@ jobs:
           L=$(find build -name DualityListen -type f -perm -u+x | head -n 1)
           "$L" --align
           "$L" --starts
+          "$L" --fit
           say -o line.aiff "I keep falling into the quiet. Hold on to me, I'm almost home."
           printf 'I keep falling into the quiet\nhold on to me, I am almost home\n' > lyrics.txt
           "$L" line.aiff lyrics.txt
+          "$L" line.aiff --composite
 
       - name: Sign the plugins (ad-hoc, so Apple Silicon Macs will load them)
         run: |

@@ -90,47 +90,87 @@ std::vector<float> toListeningRate (const AudioBuffer<float>& audio, double samp
     return out;
 }
 
+// the loudness of a 16 kHz signal in 10 ms frames (dB)
+static std::vector<float> framesDb (const float* a, int n)
+{
+    const int hop = 160, frames = n / hop;
+    std::vector<float> db ((size_t) jmax (0, frames));
+    for (int f = 0; f < frames; ++f)
+    {
+        double s = 0; for (int i = 0; i < hop; ++i) { const float x = a[f * hop + i]; s += x * x; }
+        db[(size_t) f] = (float) (10.0 * std::log10 (s / hop + 1e-12));
+    }
+    return db;
+}
+
+// The phrases of a vocal: sung stretches split at every pause of 0.3 s or more, each at most 12 s (longer ones split
+// at their quietest moment after 4 s). Short pieces keep the model's timing honest: over a long stretch of singing its
+// word times can wander by seconds.
 std::vector<std::pair<int, int>> sungStretches (const std::vector<float>& a)
 {
-    const int frame = 320;   // 20 ms
-    const int frames = (int) (a.size() / (size_t) frame);
+    const int hop = 160;
+    const auto db = framesDb (a.data(), (int) a.size());
+    const int frames = (int) db.size();
     std::vector<std::pair<int, int>> out;
     if (frames == 0) return out;
-    std::vector<float> db ((size_t) frames);
-    for (int f = 0; f < frames; ++f)
-    {
-        double s = 0; for (int i = 0; i < frame; ++i) { const float x = a[(size_t) (f * frame + i)]; s += x * x; }
-        db[(size_t) f] = (float) (10.0 * std::log10 (s / frame + 1e-12));
-    }
     auto sorted = db; std::sort (sorted.begin(), sorted.end());
     const float loud = sorted[(size_t) ((frames - 1) * 95 / 100)];
-    const float thresh = jmax (-60.0f, loud - 35.0f);
-    // sung frames, widened by 0.2 s each side, gaps under 0.8 s closed
-    std::vector<bool> on ((size_t) frames, false);
-    for (int f = 0; f < frames; ++f)
-        if (db[(size_t) f] > thresh)
-            for (int g = jmax (0, f - 10); g <= jmin (frames - 1, f + 10); ++g) on[(size_t) g] = true;
-    std::vector<std::pair<int, int>> runs;
+    const float thresh = jmax (-60.0f, loud - 30.0f);
+    std::vector<std::pair<int, int>> runs;   // sung frames, pauses under 0.3 s closed
     for (int f = 0; f < frames;)
     {
-        if (! on[(size_t) f]) { ++f; continue; }
-        int e = f; while (e < frames && on[(size_t) e]) ++e;
-        if (! runs.empty() && f - runs.back().second < 40) runs.back().second = e; else runs.push_back ({ f, e });
+        if (db[(size_t) f] <= thresh) { ++f; continue; }
+        int e = f; while (e < frames && db[(size_t) e] > thresh) ++e;
+        if (! runs.empty() && f - runs.back().second < 30) runs.back().second = e; else runs.push_back ({ f, e });
         f = e;
     }
-    // each at most 28 s (the model hears 30 s at a time): longer ones split at their quietest moment after 15 s
     for (auto r : runs)
     {
-        int s = r.first;
-        while (r.second - s > 1400)
+        if (r.second - r.first < 8) continue;   // a click, a breath
+        int s = jmax (0, r.first - 15), e = jmin (frames, r.second + 15);   // 150 ms around it
+        while (e - s > 1200)
         {
-            int cut = s + 750; float q = 1e9f;
-            for (int f = s + 750; f < s + 1400; ++f) if (db[(size_t) f] < q) { q = db[(size_t) f]; cut = f; }
-            out.push_back ({ s * frame, cut * frame }); s = cut;
+            int cut = s + 400; float q = 1e9f;
+            for (int f = s + 400; f < s + 1200; ++f) if (db[(size_t) f] < q) { q = db[(size_t) f]; cut = f; }
+            out.push_back ({ s * hop, cut * hop }); s = cut;
         }
-        if (r.second - s >= 12) out.push_back ({ s * frame, r.second * frame });
+        out.push_back ({ s * hop, e * hop });
     }
     return out;
+}
+
+// The model's words of one phrase, slid into place: the shift (up to 2.5 s either way) that puts the most of the words
+// on sung sound. A missed word does not move the others; words already on their sound stay where they are.
+void fitToVoice (std::vector<Word>& words, const std::vector<float>& a, double from, double to)
+{
+    if (words.empty()) return;
+    const int f0 = jmax (0, (int) (from * 100.0)), f1 = jmin ((int) (a.size() / 160), (int) (to * 100.0));
+    if (f1 - f0 < 10) return;
+    const auto db = framesDb (a.data() + f0 * 160, (f1 - f0) * 160);
+    float loud = -200.0f; for (float x : db) loud = jmax (loud, x);
+    std::vector<int> voiced (db.size() + 1, 0);   // running count of sung frames
+    for (size_t i = 0; i < db.size(); ++i) voiced[i + 1] = voiced[i] + (db[i] > loud - 25.0f ? 1 : 0);
+    auto score = [&] (int shift)
+    {
+        double sc = 0, all = 0;
+        for (auto& w : words)
+        {
+            const int a0 = jlimit (0, (int) db.size(), (int) std::lround (w.t0 * 100.0) - f0 + shift);
+            const int a1 = jlimit (0, (int) db.size(), (int) std::lround (w.t1 * 100.0) - f0 + shift);
+            const int len = jmax (1, (int) std::lround ((w.t1 - w.t0) * 100.0));
+            sc += voiced[(size_t) a1] - voiced[(size_t) a0]; all += len;
+        }
+        return all > 0 ? sc / all : 0.0;
+    };
+    const double here = score (0);
+    int best = 0; double bestScore = here;
+    for (int sh = -250; sh <= 250; ++sh)
+    {
+        const double sc = score (sh) - 0.0002 * std::abs (sh);   // (of equals, the smaller move)
+        if (sc > bestScore) { bestScore = sc; best = sh; }
+    }
+    if (best == 0 || bestScore < here + 0.08) return;   // only a clear improvement
+    for (auto& w : words) { w.t0 += best * 0.01; w.t1 += best * 0.01; }
 }
 
 //==============================================================================
@@ -247,6 +287,7 @@ std::vector<Word> Ears::hear (const std::vector<float>& audio, std::function<voi
         }
         const double offset = s.first / 16000.0, end = s.second / 16000.0;
         const int eot = whisper_token_eot (ctx);
+        std::vector<Word> phraseWords;
         for (int i = 0; i < whisper_full_n_segments (ctx); ++i)
         {
             const auto text = cleanWord (String::fromUTF8 (whisper_full_get_segment_text (ctx, i)));
@@ -270,8 +311,10 @@ std::vector<Word> Ears::hear (const std::vector<float>& audio, std::function<voi
             if (w.t0 >= end) continue;   // (in the padding)
             w.t1 = jlimit (w.t0 + 0.05, jmax (w.t0 + 0.05, end), w.t1);
             w.confidence = n > 0 ? sum / (float) n : 0.5f;
-            words.push_back (w);
+            phraseWords.push_back (w);
         }
+        fitToVoice (phraseWords, audio, offset, end);
+        for (auto& w : phraseWords) words.push_back (w);
         done += s.second - s.first;
         if (progress) progress (totalLen > 0 ? (float) (done / totalLen) : 1.0f);
     }

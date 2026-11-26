@@ -51,6 +51,9 @@ namespace DualityWords
         JUCE_DECLARE_NON_COPYABLE (Ears)
     };
 
+    // a phrase's words slid into place: the shift that puts the most of them on sung sound (in [from, to] seconds)
+    void fitToVoice (std::vector<Word>& words, const std::vector<float>& audio16k, double from, double to);
+
     // each word's start moved back to where its sound begins (the quiet just before it, within 150 ms)
     void refineStarts (std::vector<Word>& words, const std::vector<float>& audio16k);
 

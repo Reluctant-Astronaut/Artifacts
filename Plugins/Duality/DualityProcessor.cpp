@@ -76,11 +76,11 @@ AudioProcessorValueTreeState::ParameterLayout DualityProcessor::createLayout()
     p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "etone", 1 }, "Echo Tone", NormalisableRange<float> (-1.0f, 1.0f, 0.001f), -0.3f, signedPct));
     p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "eamt", 1 }, "Echo Amount", unit, 0.5f, pct));
     p.push_back (std::make_unique<AudioParameterChoice> (ParameterID { "tfreeze", 1 }, "Throw Freeze", StringArray { "Off", "On" }, 0));
-    p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "tdecay", 1 }, "Throw Decay", skewed (0.5f, 20.0f, 4.0f), 3.5f,
+    p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "tdecay", 1 }, "Throw Decay", skewed (0.5f, 20.0f, 4.0f), 4.5f,
         AudioParameterFloatAttributes().withLabel ("s").withStringFromValueFunction ([] (float v, int) { return String (v, v < 10.0f ? 1 : 0) + " s"; })));
-    p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "tpre", 1 }, "Throw Pre-delay", skewed (0.0f, 250.0f, 50.0f), 40.0f,
+    p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "tpre", 1 }, "Throw Pre-delay", skewed (0.0f, 250.0f, 50.0f), 90.0f,
         AudioParameterFloatAttributes().withLabel ("ms").withStringFromValueFunction ([] (float v, int) { return String (roundToInt (v)) + " ms"; })));
-    p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "tsize", 1 }, "Throw Size", NormalisableRange<float> (0.6f, 1.4f, 0.001f), 1.25f,
+    p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "tsize", 1 }, "Throw Size", NormalisableRange<float> (0.6f, 1.4f, 0.001f), 1.3f,
         AudioParameterFloatAttributes().withStringFromValueFunction ([] (float v, int) { return String (roundToInt (v * 100.0f)) + " %"; })));
     p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "ttone", 1 }, "Throw Tone", NormalisableRange<float> (-1.0f, 1.0f, 0.001f), 0.0f, signedPct));
     p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "tamt", 1 }, "Throw Amount", unit, 0.7f, pct));
@@ -316,9 +316,9 @@ void DualityProcessor::wordSends (const AudioBuffer<float>& dry, int n)
         if (testGates >> throwFx & 1) { std::fill (t.send.begin(), t.send.begin() + n, 1.0f); t.used = true; }
         if (testGates >> echoFx & 1)  { std::fill (e.send.begin(), e.send.begin() + n, 1.0f); e.used = true; }
     }
-    // the gates open in 5 ms and close in 40 ms, and carry the voice
+    // the gates open in 15 ms and close in 60 ms (no clicks where a word is cut), and carry the voice
     const float* l = dry.getReadPointer (0); const float* r = dry.getReadPointer (1);
-    const float att = 1.0f - std::exp (-1.0f / (0.005f * (float) fxSampleRate)), rel = 1.0f - std::exp (-1.0f / (0.040f * (float) fxSampleRate));
+    const float att = 1.0f - std::exp (-1.0f / (0.015f * (float) fxSampleRate)), rel = 1.0f - std::exp (-1.0f / (0.060f * (float) fxSampleRate));
     auto gate = [&] (std::vector<float>& send, float& env)
     {
         for (int i = 0; i < n; ++i)

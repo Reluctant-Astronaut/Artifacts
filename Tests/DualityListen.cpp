@@ -30,6 +30,21 @@ int main (int argc, char** argv)
         std::cout << (ok ? "ALIGN OK" : "ALIGN WRONG") << "\n";
         return ok ? 0 : 1;
     }
+    if (argc > 1 && String (argv[1]) == "--fit")
+    {
+        // a phrase sung 1.0-3.0 s (four syllables with small dips); the model put its words 1.5 s late
+        std::vector<float> a (16000 * 6, 0.0f);
+        for (int i = 16000; i < 48000; ++i) a[(size_t) i] = (0.6f + 0.4f * std::sin (i * 0.0004f)) * 0.3f * std::sin (i * 0.1f);
+        std::vector<DualityWords::Word> ws = { { "I", 2.5, 2.8 }, { "keep", 2.85, 3.3 }, { "falling", 3.4, 4.1 }, { "down", 4.1, 4.5 } };
+        DualityWords::fitToVoice (ws, a, 0.85, 3.15);
+        print (ws);
+        // and a phrase already in place stays
+        std::vector<DualityWords::Word> ok2 = { { "I", 1.0, 1.3 }, { "keep", 1.35, 1.8 }, { "falling", 1.9, 2.6 }, { "down", 2.6, 3.0 } };
+        DualityWords::fitToVoice (ok2, a, 0.85, 3.15);
+        const bool ok = std::abs (ws[0].t0 - 1.0) < 0.12 && std::abs (ws[3].t1 - 3.0) < 0.12 && std::abs (ok2[0].t0 - 1.0) < 0.001;
+        std::cout << (ok ? "FIT OK" : "FIT WRONG") << "\n";
+        return ok ? 0 : 1;
+    }
     if (argc > 1 && String (argv[1]) == "--starts")
     {
         // a word heard late: its "f" (quiet, 0.40-0.50 s) and vowel (0.50-0.90 s) after silence; the model says 0.60
@@ -54,9 +69,26 @@ int main (int argc, char** argv)
     if (r == nullptr) { std::cerr << "can't read " << argv[1] << "\n"; return 2; }
     AudioBuffer<float> buf ((int) r->numChannels, (int) r->lengthInSamples);
     r->read (&buf, 0, (int) r->lengthInSamples, 0, true, true);
-    const auto a16 = DualityWords::toListeningRate (buf, r->sampleRate);
+    auto a16 = DualityWords::toListeningRate (buf, r->sampleRate);
     std::cout << "audio: " << String (a16.size() / 16000.0, 2) << " s; sung stretches: " << (int) DualityWords::sungStretches (a16).size() << "\n";
 
+    // --composite: the line after 3 s of silence and again after 2 s more, to check the times far into a take
+    const bool composite = argc > 2 && String (argv[2]) == "--composite";
+    std::vector<float> onsets;
+    if (composite)
+    {
+        std::vector<float> c ((size_t) (16000 * 3), 0.0f);
+        onsets.push_back (3.0f);
+        c.insert (c.end(), a16.begin(), a16.end());
+        c.resize (c.size() + 16000 * 2, 0.0f);
+        onsets.push_back ((float) c.size() / 16000.0f);
+        c.insert (c.end(), a16.begin(), a16.end());
+        a16 = c;
+        // where the speech really starts in each copy
+        int first = 0; while (first < (int) a16.size() && std::abs (a16[(size_t) first]) < 0.01f) ++first;
+        const float lead = (float) first / 16000.0f - 3.0f;
+        for (auto& o : onsets) o += lead;
+    }
     std::atomic<bool> abort { false };
     String err;
     float lastShown = -1;
@@ -69,7 +101,20 @@ int main (int argc, char** argv)
     auto words = ears.hear (a16, {}, abort, err);
     std::cout << "heard " << (int) words.size() << " words in " << String ((Time::getMillisecondCounterHiRes() - t) / 1000.0, 1) << " s" << (err.isNotEmpty() ? " (" + err + ")" : String()) << "\n";
     print (words);
-    if (argc > 2)
+    if (composite)
+    {
+        // each line's first word near where its speech starts, and every word on sound
+        bool ok = ! words.empty();
+        for (auto o : onsets)
+        {
+            double nearest = 1e9; for (auto& w : words) nearest = jmin (nearest, std::abs (w.t0 - o));
+            std::cout << "line at " << String (o, 2) << " s: nearest word start " << String (nearest, 2) << " s away\n";
+            ok = ok && nearest < 0.25;
+        }
+        std::cout << (ok ? "TIMING OK" : "TIMING WRONG") << "\n";
+        return ok ? 0 : 1;
+    }
+    if (argc > 2 && ! composite)
     {
         std::cout << "-- lyrics placed:\n";
         print (DualityWords::placeLyrics (words, File (String (argv[2])).loadFileAsString(), 0, a16.size() / 16000.0));
