@@ -47,6 +47,14 @@ if(NOT DEFINED ARA_SDK_DIR)
 endif()
 juce_set_ara_sdk_path(${ARA_SDK_DIR})
 
+# which build this is (the commit GitHub built it from), shown small in the plug-ins
+if(DEFINED ENV{GITHUB_SHA})
+    string(SUBSTRING "$ENV{GITHUB_SHA}" 0 7 ARTIFACTS_BUILD)
+else()
+    set(ARTIFACTS_BUILD "local")
+endif()
+add_compile_definitions(ARTIFACTS_BUILD="${ARTIFACTS_BUILD}")
+
 # whisper.cpp (MIT): Duality hears the vocal's words on the computer itself. A local copy with -DWHISPER_DIR=...
 # Built as static libraries into Duality only; no OpenMP (a plug-in must not bring its own thread runtime),
 # on a Mac with Metal (Apple Silicon) and Accelerate, in one universal binary as whisper.cpp's own Mac framework is.

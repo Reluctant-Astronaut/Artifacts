@@ -2175,6 +2175,13 @@ void WordsWindow::paintLive (juce::Graphics& g)
     g.drawText (st, Rectangle<float> (x0 + w * 0.3f, r.getY() + 6.0f, keysX - 8.0f - (x0 + w * 0.3f), 14.0f), Justification::centredRight);
     g.setColour (ink.withAlpha (0.3f));
     g.fillRect (x0, r.getY() + 23.0f, w, 0.8f);
+   #ifdef ARTIFACTS_BUILD
+    {   // which build is running, small in the corner
+        g.setColour (ink.withAlpha (0.35f));
+        g.setFont (KintsugiFonts::serif (7.5f, false));
+        g.drawText ("BUILD " ARTIFACTS_BUILD, Rectangle<float> (x0 + w - 120.0f, r.getBottom() - 12.0f, 120.0f, 10.0f), Justification::centredRight);
+    }
+   #endif
     if (view.progress >= 0.0f)   // how far the listening has come, along the header's rule
     {
         g.setColour (Colour (0xffc4561a).withAlpha (0.8f));
@@ -2213,7 +2220,7 @@ void WordsWindow::paintLive (juce::Graphics& g)
             wd.editing = wd.id >= 0 && wd.id == editingId;
             const String text = wd.editing ? wd.text + "|" : wd.text;
             const float tw = GlyphArrangement::getStringWidth (f, wd.text) + 8.0f;
-            const float want = jmax (a - 2.0f, (a + b) * 0.5f - tw * 0.5f);   // centred over the word, never starting before it
+            const float want = a - 2.0f;   // the word's text begins where the word begins (as lyrics under a melody)
             int lane = 0;
             if (want < laneRight[0] + 3.0f) lane = want >= laneRight[1] + 3.0f ? 1 : (laneRight[1] < laneRight[0] ? 1 : 0);
             const float left = jmax (want, laneRight[lane] + 3.0f);

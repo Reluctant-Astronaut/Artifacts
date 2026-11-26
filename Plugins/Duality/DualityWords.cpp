@@ -139,8 +139,10 @@ std::vector<std::pair<int, int>> sungStretches (const std::vector<float>& a)
     return out;
 }
 
-// The model's words of one phrase, slid into place: the shift (up to 2.5 s either way) that puts the most of the words
-// on sung sound. A missed word does not move the others; words already on their sound stay where they are.
+// The model's words of one phrase, put on the phrase's sound. In singing the model's times run late (often most of a
+// second) and its first word starts well after the phrase does; what it gets right is the order and the proportions.
+// So: the phrase's words are stretched to begin where the singing begins and end where it ends, keeping their
+// proportions (each start is then moved back to the quiet just before it, in refineStarts).
 void fitToVoice (std::vector<Word>& words, const std::vector<float>& a, double from, double to)
 {
     if (words.empty()) return;
@@ -148,29 +150,19 @@ void fitToVoice (std::vector<Word>& words, const std::vector<float>& a, double f
     if (f1 - f0 < 10) return;
     const auto db = framesDb (a.data() + f0 * 160, (f1 - f0) * 160);
     float loud = -200.0f; for (float x : db) loud = jmax (loud, x);
-    std::vector<int> voiced (db.size() + 1, 0);   // running count of sung frames
-    for (size_t i = 0; i < db.size(); ++i) voiced[i + 1] = voiced[i] + (db[i] > loud - 25.0f ? 1 : 0);
-    auto score = [&] (int shift)
+    int v0 = 0, v1 = (int) db.size() - 1;
+    while (v0 < v1 && db[(size_t) v0] < loud - 30.0f) ++v0;
+    while (v1 > v0 && db[(size_t) v1] < loud - 30.0f) --v1;
+    const double sungFrom = from + v0 * 0.01, sungTo = from + (v1 + 1) * 0.01;
+    const double wa = words.front().t0, wb = words.back().t1;
+    if (sungTo - sungFrom < 0.1) return;
+    double scale = wb - wa > 0.05 ? (sungTo - sungFrom) / (wb - wa) : 1.0;
+    scale = jlimit (0.5, 2.0, scale);
+    for (auto& w : words)
     {
-        double sc = 0, all = 0;
-        for (auto& w : words)
-        {
-            const int a0 = jlimit (0, (int) db.size(), (int) std::lround (w.t0 * 100.0) - f0 + shift);
-            const int a1 = jlimit (0, (int) db.size(), (int) std::lround (w.t1 * 100.0) - f0 + shift);
-            const int len = jmax (1, (int) std::lround ((w.t1 - w.t0) * 100.0));
-            sc += voiced[(size_t) a1] - voiced[(size_t) a0]; all += len;
-        }
-        return all > 0 ? sc / all : 0.0;
-    };
-    const double here = score (0);
-    int best = 0; double bestScore = here;
-    for (int sh = -250; sh <= 250; ++sh)
-    {
-        const double sc = score (sh) - 0.0002 * std::abs (sh);   // (of equals, the smaller move)
-        if (sc > bestScore) { bestScore = sc; best = sh; }
+        w.t0 = sungFrom + (w.t0 - wa) * scale;
+        w.t1 = sungFrom + (w.t1 - wa) * scale;
     }
-    if (best == 0 || bestScore < here + 0.08) return;   // only a clear improvement
-    for (auto& w : words) { w.t0 += best * 0.01; w.t1 += best * 0.01; }
 }
 
 //==============================================================================
