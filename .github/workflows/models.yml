@@ -2,6 +2,8 @@
 name: Fetch models
 on:
   workflow_dispatch:
+permissions:
+  contents: write
 jobs:
   fetch:
     runs-on: ubuntu-latest
@@ -16,8 +18,11 @@ jobs:
           curl -sSfL -o models/w2v-vocab.json $HF/Xenova/wav2vec2-base-960h/resolve/main/vocab.json
           curl -sSfL -o models/w2v-config.json $HF/Xenova/wav2vec2-base-960h/resolve/main/config.json
           ls -la models
-      - uses: actions/upload-artifact@v4
-        with:
-          name: models
-          path: models
-          retention-days: 3
+      - name: Keep them on a release of their own (models; MIT / Apache-2.0 licensed)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view models -R ${{ github.repository }} >/dev/null 2>&1 || \
+            gh release create models -R ${{ github.repository }} --prerelease --title "Listening models" \
+              --notes "Whisper small.en (MIT, ggml from whisper.cpp) and wav2vec2-base-960h (Apache-2.0, ONNX). For checks."
+          gh release upload models models/* -R ${{ github.repository }} --clobber
