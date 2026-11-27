@@ -1458,6 +1458,69 @@ static void plateIR (double sr, float decay, float damp, const File& out)
     for (int i = 0; i < n; ++i) { m.writeFloat (oL[(size_t) i]); m.writeFloat (oR[(size_t) i]); }
     out.replaceWithData (m.getData(), m.getDataSize());
 }
+// a WAV through the plug-in with its settings as given (id=value): DualityTests <dir> process in.wav out.wav [id=value...]
+// (a small WAV reader of its own: 16/24/32-bit PCM or 32-bit float)
+static bool readWav (const File& f, std::vector<Buf>& ch, double& rate)
+{
+    MemoryBlock mb; if (! f.loadFileAsData (mb)) return false;
+    MemoryInputStream in (mb, false);
+    char id[5] {}; in.read (id, 4); if (String (id) != "RIFF") return false;
+    in.readInt(); in.read (id, 4); if (String (id) != "WAVE") return false;
+    int fmt = 1, chans = 0, bits = 0;
+    while (! in.isExhausted())
+    {
+        in.read (id, 4); const int size = in.readInt(); const auto start = in.getPosition();
+        if (String (id) == "fmt ")
+        {
+            fmt = (uint16) in.readShort(); chans = in.readShort(); rate = in.readInt(); in.readInt(); in.readShort(); bits = in.readShort();
+            if (fmt == 0xFFFE && size >= 26) { in.readShort(); in.readShort(); in.readInt(); fmt = (uint16) in.readShort(); }
+        }
+        else if (String (id) == "data")
+        {
+            const int bytes = bits / 8, frames = size / jmax (1, bytes * chans);
+            ch.assign ((size_t) chans, Buf ((size_t) frames));
+            const char* d = (const char*) mb.getData() + start;
+            for (int i = 0; i < frames; ++i)
+                for (int c = 0; c < chans; ++c)
+                {
+                    const unsigned char* p = (const unsigned char*) d + ((size_t) i * (size_t) chans + (size_t) c) * (size_t) bytes;
+                    float v = 0;
+                    if (fmt == 3 && bits == 32) std::memcpy (&v, p, 4);
+                    else if (bits == 16) v = (float) (int16) (p[0] | (p[1] << 8)) / 32768.0f;
+                    else if (bits == 24) { int x = p[0] | (p[1] << 8) | (p[2] << 16); if (x & 0x800000) x -= 0x1000000; v = (float) x / 8388608.0f; }
+                    else if (bits == 32) { int32 x; std::memcpy (&x, p, 4); v = (float) x / 2147483648.0f; }
+                    ch[(size_t) c][(size_t) i] = v;
+                }
+            return chans > 0;
+        }
+        in.setPosition (start + size + (size & 1));
+    }
+    return false;
+}
+
+static void processFile (double, const File& in, const File& out, const StringArray& settings)
+{
+    std::vector<Buf> ch; double rate = 48000.0;
+    if (! readWav (in, ch, rate)) { std::cout << "can't read " << in.getFullPathName() << "\n"; return; }
+    Rig r (rate);
+    for (auto& kv : settings) r.set (kv.upToFirstOccurrenceOf ("=", false, false), kv.fromFirstOccurrenceOf ("=", false, false).getFloatValue());
+    r.reset();
+    Buf l = ch[0], rr = ch.size() > 1 ? ch[1] : ch[0], oL, oR;
+    const size_t tail = (size_t) (rate * 3.0);   // (and the tails after the last word)
+    l.resize (l.size() + tail, 0.0f); rr.resize (rr.size() + tail, 0.0f);
+    r.process (l, rr, oL, oR);
+    MemoryOutputStream m;
+    const int n = (int) oL.size();
+    const uint32 dataBytes = (uint32) n * 8u;
+    m.write ("RIFF", 4); m.writeInt ((int) (36 + dataBytes)); m.write ("WAVE", 4);
+    m.write ("fmt ", 4); m.writeInt (16); m.writeShort (3); m.writeShort (2); m.writeInt ((int) rate);
+    m.writeInt ((int) rate * 8); m.writeShort (8); m.writeShort (32);
+    m.write ("data", 4); m.writeInt ((int) dataBytes);
+    for (int i = 0; i < n; ++i) { m.writeFloat (oL[(size_t) i]); m.writeFloat (oR[(size_t) i]); }
+    out.replaceWithData (m.getData(), m.getDataSize());
+    std::cout << "wrote " << out.getFullPathName() << "\n";
+}
+
 int main (int argc, char** argv)
 {
     ScopedJuceInitialiser_GUI init;
@@ -1476,6 +1539,7 @@ int main (int argc, char** argv)
     if (argc > 2 && String (argv[2]) == "hiprobe") { hiProbe(); return 0; }
     if (argc > 2 && String (argv[2]) == "plateprobe") { plateProbe (sr); return 0; }
     if (argc > 2 && String (argv[2]) == "wordsprobe") { wordsProbe (sr); return 0; }
+    if (argc > 4 && String (argv[2]) == "process") { StringArray kv; for (int i = 5; i < argc; ++i) kv.add (argv[i]); processFile (sr, File (argv[3]), File (argv[4]), kv); return 0; }
     if (argc > 5 && String (argv[2]) == "plateir") { plateIR (sr, String (argv[3]).getFloatValue(), String (argv[4]).getFloatValue(), File (argv[5])); return 0; }
     if (gName.contains ("Equanimity")) { testEquanimity (sr); return 0; }
     testLatency (sr);

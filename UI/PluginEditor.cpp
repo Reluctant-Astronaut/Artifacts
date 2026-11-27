@@ -3765,7 +3765,7 @@ ArtifactsEditor::ArtifactsEditor (ArtifactsProcessor& p)
             setWordsPage (k);
         };
         for (auto* k : { bias, tone, drift, flutter, wear, sag, vMix, hum, glue }) k->marks.clear();
-        vType->name = "Type"; vType->stepLabels = { "TAPE", "DIGITAL", "PING-PONG" };
+        vType->name = "Type"; vType->stepLabels = { "TAPE", "DIGITAL", "PING-PONG", "ANALOG" };
         juce::MessageManager::callAsync ([sp = juce::Component::SafePointer<ArtifactsEditor> (this)] { if (sp != nullptr) sp->setWordsPage (juce::SystemStats::getEnvironmentVariable ("DUALITY_PAGE", "") == "throw" ? 0 : 1); });
         irWindow.setVisible (false);
         plateArea.addAndMakeVisible (wordsWindow);

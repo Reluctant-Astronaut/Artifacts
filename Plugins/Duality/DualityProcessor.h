@@ -2,6 +2,7 @@
 
 #include "ArtifactsProcessor.h"
 #include "VocalPlate.h"
+#include "ThrowHall.h"
 #include "DualityShared.h"
 #include "DualityARA.h"
 #include <mutex>
@@ -114,21 +115,27 @@ private:
     juce::AudioPlayHead::PositionInfo blockPos;
     bool wordsBound = false;
     int testGates = -1;   // the offline tests: every sample is a marked word with these effects (DUALITY_TEST_GATES)
+    // the offline renders: marked words at given times ("t0-t1:effects,..." in seconds, DUALITY_TEST_MARKS)
+    struct TestMark { double t0, t1; int effects; };
+    std::vector<TestMark> testMarks;
+    juce::int64 testPos = 0;
     // each effect has a few voices: a marked word plays in one with its own settings, so tails with different settings overlap
     struct Echo
     {
         std::vector<float> l, r; int w = 0;
         float time = 0;             // samples, glides to the target (a tape echo bends as its time moves)
-        float lp[2] {}, hp[2] {}, wow = 0;
+        float lp[2] {}, hp[2] {}, wow = 0, flutter = 0, chorus = 0;
         void prepare (int maxSamples) { l.assign ((size_t) maxSamples, 0.0f); r.assign ((size_t) maxSamples, 0.0f); w = 0; time = 0; lp[0] = lp[1] = hp[0] = hp[1] = 0; }
         float read (const std::vector<float>& b, float d) const;
     };
     struct ThrowVoice
     {
-        VocalPlate plate;
+        ThrowHall hall;                 // (not a second EMT: a larger, smoother space the word is thrown into)
         std::vector<float> send, pre, outL, outR;
         int preW = 0;
-        float env = 0, hpz = 0, lp[2] {}, hp[2] {};
+        float env = 0, hpz = 0, esLp = 0, lp[2] {}, hp[2] {};
+        float hold = 0;                 // while its word sounds the throw holds back; it opens as the word ends
+        std::vector<float> holdGain;
         std::array<float, 8> set {};   // the settings of the word that fed it last
         bool used = false;              // (a voice no word has fed yet stays silent and costs nothing)
     };
@@ -143,6 +150,9 @@ private:
     std::array<ThrowVoice, DualityParams::voices> throwVoices;
     std::array<EchoVoice, DualityParams::voices> echoVoices;
     float fxRet = 0;
+    // the voice ducks the effects: while it sings they step back, in its gaps they bloom
+    std::vector<float> fxDuck;
+    float duckEnvDb = -120.0f, duckPeakDb = -120.0f, duckNow = 1.0f;
     double fxSampleRate = 48000.0;
    #if JucePlugin_Enable_ARA
     DualityARA::DocumentController* araDoc = nullptr;   // the document of this instance (audio thread's copy)

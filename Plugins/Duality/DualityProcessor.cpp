@@ -72,7 +72,7 @@ AudioProcessorValueTreeState::ParameterLayout DualityProcessor::createLayout()
         p.push_back (std::make_unique<AudioParameterChoice> (ParameterID { "enote", 1 }, "Echo Note", notes, 5));
     }
     p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "efb", 1 }, "Echo Feedback", NormalisableRange<float> (0.0f, 0.95f, 0.001f), 0.35f, pct));
-    p.push_back (std::make_unique<AudioParameterChoice> (ParameterID { "etype", 1 }, "Echo Type", StringArray { "Tape", "Digital", "Ping-Pong" }, 0));
+    p.push_back (std::make_unique<AudioParameterChoice> (ParameterID { "etype", 1 }, "Echo Type", StringArray { "Tape", "Digital", "Ping-Pong", "Analog" }, 0));
     p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "etone", 1 }, "Echo Tone", NormalisableRange<float> (-1.0f, 1.0f, 0.001f), -0.3f, signedPct));
     p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "eamt", 1 }, "Echo Amount", unit, 0.5f, pct));
     p.push_back (std::make_unique<AudioParameterChoice> (ParameterID { "tfreeze", 1 }, "Throw Freeze", StringArray { "Off", "On" }, 0));
@@ -103,6 +103,14 @@ DualityProcessor::DualityProcessor()
     pDuck = get ("pduck"); pPersp = get ("perspective"); pWidth = get ("width"); pMix = get ("mix"); pOutput = get ("output");
     for (int i = 0; i < DualityParams::numShared; ++i) own[(size_t) i] = get (DualityParams::sharedIDs[i]);
     testGates = SystemStats::getEnvironmentVariable ("DUALITY_TEST_GATES", "-1").getIntValue();
+    for (auto& m : StringArray::fromTokens (SystemStats::getEnvironmentVariable ("DUALITY_TEST_MARKS", ""), ",", ""))
+    {
+        const auto range = m.upToFirstOccurrenceOf (":", false, false);
+        testMarks.push_back ({ range.upToFirstOccurrenceOf ("-", false, false).getDoubleValue(),
+                               range.fromFirstOccurrenceOf ("-", false, false).getDoubleValue(),
+                               m.fromFirstOccurrenceOf (":", false, false).getIntValue() });
+    }
+    if (! testMarks.empty()) testGates = 0;
     pointParamsAt (own);
 }
 
@@ -159,7 +167,9 @@ void DualityProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     fxSampleRate = sampleRate;
     for (auto& v : throwVoices)
     {
-        v.plate.prepare (sampleRate, 1.4f);
+        v.hall.prepare (sampleRate, 1.5f);
+        v.holdGain.assign ((size_t) samplesPerBlock, 1.0f); v.hold = 0;
+        v.esLp = 0;
         for (auto* b : { &v.send, &v.outL, &v.outR }) b->assign ((size_t) samplesPerBlock, 0.0f);
         v.pre.assign ((size_t) (0.3 * sampleRate) + 4, 0.0f); v.preW = 0;
         v.env = v.hpz = 0; v.lp[0] = v.lp[1] = v.hp[0] = v.hp[1] = 0; v.used = false;
@@ -171,6 +181,8 @@ void DualityProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
         v.env = 0; v.used = false;
     }
     fxRet = 0;
+    fxDuck.assign ((size_t) samplesPerBlock, 1.0f);
+    duckEnvDb = duckPeakDb = -120.0f; duckNow = 1.0f;
     setLatencySamples (0);
 }
 
@@ -308,13 +320,33 @@ void DualityProcessor::wordSends (const AudioBuffer<float>& dry, int n)
         }
     }
    #endif
-    if (testGates >= 0)   // (the offline tests: every sample a marked word, in the first voices, with the knobs' settings)
+    if (testGates >= 0)   // (the offline tests: every sample a marked word, or the given marks; the knobs' settings)
     {
-        auto& t = throwVoices[0]; auto& e = echoVoices[0];
-        for (int k = 0; k < numThrow; ++k) t.set[(size_t) k] = P (throwSet[k]);
-        for (int k = 0; k < numEcho; ++k) e.set[(size_t) k] = P (echoSet[k]);
-        if (testGates >> throwFx & 1) { std::fill (t.send.begin(), t.send.begin() + n, 1.0f); t.used = true; }
-        if (testGates >> echoFx & 1)  { std::fill (e.send.begin(), e.send.begin() + n, 1.0f); e.used = true; }
+        int nt = 0, ne = 0;
+        auto feed = [&] (int effects, int a, int b)
+        {
+            if (effects >> throwFx & 1)
+            {
+                auto& t = throwVoices[(size_t) (nt++ % voices)];
+                for (int k = 0; k < numThrow; ++k) t.set[(size_t) k] = P (throwSet[k]);
+                std::fill (t.send.begin() + a, t.send.begin() + b, 1.0f); t.used = true;
+            }
+            if (effects >> echoFx & 1)
+            {
+                auto& e = echoVoices[(size_t) (ne++ % voices)];
+                for (int k = 0; k < numEcho; ++k) e.set[(size_t) k] = P (echoSet[k]);
+                std::fill (e.send.begin() + a, e.send.begin() + b, 1.0f); e.used = true;
+            }
+        };
+        if (testMarks.empty()) feed (testGates, 0, n);
+        else
+            for (auto& m : testMarks)
+            {
+                const int64 a = (int64) ((m.t0 - 0.06) * fxSampleRate) - testPos, b = (int64) ((m.t1 + 0.12) * fxSampleRate) - testPos;
+                if (b > 0 && a < n) feed (m.effects, (int) std::max<int64> (0, a), (int) std::min<int64> (n, b));
+                else { if (m.effects >> throwFx & 1) ++nt; if (m.effects >> echoFx & 1) ++ne; }
+            }
+        testPos += n;
     }
     // the gates open in 15 ms and close in 60 ms (no clicks where a word is cut), and carry the voice
     const float* l = dry.getReadPointer (0); const float* r = dry.getReadPointer (1);
@@ -328,8 +360,39 @@ void DualityProcessor::wordSends (const AudioBuffer<float>& dry, int n)
             send[(size_t) i] = 0.5f * (l[i] + r[i]) * env;
         }
     };
+    // a throw holds back while its word sounds and opens as the word ends (from the word's gate, before the voice)
+    {
+        const float hA = 1.0f - std::exp (-1.0f / (0.030f * (float) fxSampleRate)), hR = 1.0f - std::exp (-1.0f / (0.350f * (float) fxSampleRate));
+        for (auto& v : throwVoices)
+        {
+            if (! v.used) continue;
+            if ((int) v.holdGain.size() < n) v.holdGain.resize ((size_t) n, 1.0f);
+            for (int i = 0; i < n; ++i)
+            {
+                const float g = v.send[(size_t) i];
+                v.hold += (g > v.hold ? hA : hR) * (g - v.hold);
+                v.holdGain[(size_t) i] = 1.0f - 0.85f * v.hold;
+            }
+        }
+    }
     for (auto& v : throwVoices) if (v.used) gate (v.send, v.env);
     for (auto& v : echoVoices)  if (v.used) gate (v.send, v.env);
+
+    // the duck: how close the voice is to its own recent loudness (0 dB under: fully ducked; 20 dB under: free)
+    if ((int) fxDuck.size() < n) fxDuck.resize ((size_t) n, 1.0f);
+    const float envA = std::exp (-1.0f / (0.005f * (float) fxSampleRate)), envR = std::exp (-1.0f / (0.120f * (float) fxSampleRate));
+    const float peakR = std::exp (-1.0f / (3.0f * (float) fxSampleRate));
+    const float gA = 1.0f - std::exp (-1.0f / (0.030f * (float) fxSampleRate)), gR = 1.0f - std::exp (-1.0f / (0.300f * (float) fxSampleRate));
+    for (int i = 0; i < n; ++i)
+    {
+        const float lv = Decibels::gainToDecibels (std::abs (0.5f * (l[i] + r[i])), -120.0f);
+        duckEnvDb = lv > duckEnvDb ? lv + envA * (duckEnvDb - lv) : lv + envR * (duckEnvDb - lv);
+        duckPeakDb = jmax (duckEnvDb, duckPeakDb * peakR + (1.0f - peakR) * duckEnvDb - 0.0f);
+        const float closeness = jlimit (0.0f, 1.0f, (duckEnvDb - (duckPeakDb - 20.0f)) / 20.0f);
+        const float target = duckEnvDb < -60.0f ? 1.0f : 1.0f - closeness;   // 1 = free, 0 = fully ducked
+        duckNow += (target < duckNow ? gA : gR) * (target - duckNow);
+        fxDuck[(size_t) i] = duckNow;
+    }
 }
 
 float DualityProcessor::Echo::read (const std::vector<float>& b, float d) const
@@ -363,31 +426,33 @@ void DualityProcessor::wordReturns (AudioBuffer<float>& out, int n)
     auto ret = [&] (int i) { return retStart + (retEnd - retStart) * (float) (i + 1) / (float) n; };
     fxRet = retEnd;
 
-    // Throw: pre-delay, then its own plate (Size, Decay, or Freeze: a tail that hangs on), then its Tone
+    // Throw: pre-delay, a softened "s", then its own hall (Size, Decay, or Freeze: a tail that hangs on; Tone: how fast
+    // its highs die); ducked under the voice, so it blooms in the gap after the word
+    const float throwDuck = Decibels::decibelsToGain (-10.0f);
     for (auto& v : throwVoices)
     {
         if (! v.used) continue;
         const auto& st = v.set;   // freeze, decay, pre-delay, size, tone, amount
         const int pre = jlimit (0, (int) v.pre.size() - 2, (int) (st[2] * 0.001 * rate));
-        const float hpc = coef (250.0f);   // a throw is the word's air and body, not its chest
+        const float hpc = coef (300.0f), esc = coef (6500.0f);
         for (int i = 0; i < n; ++i)
         {
             v.pre[(size_t) v.preW] = v.send[(size_t) i];
             int rd = v.preW - pre; if (rd < 0) rd += (int) v.pre.size();
             if (++v.preW >= (int) v.pre.size()) v.preW = 0;
-            const float x = v.pre[(size_t) rd];
+            float x = v.pre[(size_t) rd];
             v.hpz += hpc * (x - v.hpz);
-            v.send[(size_t) i] = x - v.hpz;   // no rumble into the throw
+            x -= v.hpz;                                  // the word's air and body, not its chest
+            v.esLp += esc * (x - v.esLp);
+            x = v.esLp + 0.55f * (x - v.esLp);           // its sibilance 5 dB down: a throw shimmers, never hisses
+            v.send[(size_t) i] = x;
         }
         const float decay = st[0] > 0.5f ? 25.0f : jlimit (0.5f, 20.0f, st[1]);
-        v.plate.setSize (jlimit (0.6f, 1.4f, st[3]));
-        v.plate.setParameters (decay, 0.35f);
-        v.plate.process (v.send.data(), v.outL.data(), v.outR.data(), n);
-        float lpHz, hpHz; tone (st[4], lpHz, hpHz);
-        lpHz = jmin (lpHz, 10000.0f);   // (no fizz at the top of the bloom)
-        const float lc = coef (lpHz), hc = coef (hpHz);
-        // a throw blooms: at the default amount its tail is a few dB under the word itself
-        const float g = jlimit (0.0f, 1.0f, st[5]) * 3.2f * std::pow (2.2f / jmin (decay, 12.0f), 0.25f);
+        v.hall.setSize (jlimit (0.6f, 1.5f, st[3]));
+        v.hall.setParameters (decay, jlimit (-1.0f, 1.0f, st[4]));
+        v.hall.process (v.send.data(), v.outL.data(), v.outR.data(), n);
+        const float lc = coef (jmin ((float) rate * 0.45f, 12000.0f)), hc = coef (120.0f);
+        const float g = jlimit (0.0f, 1.0f, st[5]) * 5.8f;   // (at the default amount the bloom a few dB under the word)
         for (int i = 0; i < n; ++i)
         {
             float x[2] = { v.outL[(size_t) i], v.outR[(size_t) i] };
@@ -396,52 +461,70 @@ void DualityProcessor::wordReturns (AudioBuffer<float>& out, int n)
                 v.lp[c] += lc * (x[c] - v.lp[c]); x[c] = v.lp[c];
                 v.hp[c] += hc * (x[c] - v.hp[c]); x[c] -= v.hp[c];
             }
-            const float k = g * ret (i) * og;
+            const float duck = (throwDuck + (1.0f - throwDuck) * fxDuck[(size_t) i]) * v.holdGain[(size_t) i];
+            const float k = g * ret (i) * og * duck;
             oL[i] += x[0] * k; oR[i] += x[1] * k;
         }
     }
 
-    // Echo: a delay in note values of the song's tempo (Sync) or in ms; Tape (darkening, a little wow, it bends
-    // when its time moves), Digital (clean), or Ping-Pong (the repeats cross from side to side)
+    // Echo: a delay in note values of the song's tempo (Sync) or in ms, in one of four characters:
+    //   Tape      - each repeat darker and rounder (saturating), wow and flutter, it bends when its time moves
+    //   Digital   - clean and exact, full range
+    //   Ping-Pong - clean, the repeats cross from side to side (on a stereo track)
+    //   Analog    - a bucket-brigade delay: dark, gritty, with a chorus-like shimmer in its repeats
+    // Tone tilts every repeat darker or brighter on top. Ducked under the voice: the repeats speak in its gaps.
     const double bpm = jlimit (20.0, 400.0, blockPos.getBpm().orFallback (120.0));
+    const float echoDuck = Decibels::decibelsToGain (-7.0f);
     for (auto& v : echoVoices)
     {
         if (! v.used) continue;
         auto& echo = v.echo;
         const auto& st = v.set;   // sync, time ms, note, feedback, type, tone, amount
-        const int type = jlimit (0, 2, roundToInt (st[4]));
+        const int type = jlimit (0, 3, roundToInt (st[4]));
+        const bool tape = type == 0, analog = type == 3, pingPong = type == 2;
         const int note = jlimit (0, numNotes - 1, roundToInt (st[2]));
         const double seconds = st[0] > 0.5f ? noteQuarters[note] * 60.0 / bpm : jlimit (20.0f, 2000.0f, st[1]) * 0.001;
         const float target = (float) jlimit (16.0, (double) echo.l.size() - 8.0, seconds * rate);
         if (echo.time <= 0.0f) echo.time = target;
-        const float glide = type == 0 ? 1.0f - std::exp (-1.0f / (0.25f * (float) rate)) : 1.0f - std::exp (-1.0f / (0.02f * (float) rate));
+        const float glide = tape ? 1.0f - std::exp (-1.0f / (0.25f * (float) rate)) : 1.0f - std::exp (-1.0f / (0.02f * (float) rate));
         const float fb = jlimit (0.0f, 0.95f, st[3]);
         float lpHz, hpHz; tone (st[5], lpHz, hpHz);
-        if (type == 0) lpHz = jmin (lpHz, 5500.0f);   // tape: every repeat a little darker
+        if (tape)   { lpHz = jmin (lpHz, 3200.0f); hpHz = jmax (hpHz, 160.0f); }
+        if (analog) { lpHz = jmin (lpHz, 2400.0f); hpHz = jmax (hpHz, 110.0f); }
         const float lc = coef (lpHz), hc = coef (hpHz);
+        const float drive = tape ? 2.2f : analog ? 1.6f : 0.0f;
         const float amt = jlimit (0.0f, 1.0f, st[6]);
-        const float wowInc = (float) (MathConstants<double>::twoPi * 0.55 / rate), wowDepth = (float) (0.00018 * rate);
+        const float wowInc = (float) (MathConstants<double>::twoPi * 0.5 / rate), wowDepth = (float) (0.0007 * rate);
+        const float flutInc = (float) (MathConstants<double>::twoPi * 6.3 / rate), flutDepth = (float) (0.00009 * rate);
+        const float choInc = (float) (MathConstants<double>::twoPi * 0.9 / rate), choDepth = (float) (0.0011 * rate);
         const int size = (int) echo.l.size();
+        const bool coloured = tape || analog;
+        auto wrap = [] (float& ph, float inc) { ph += inc; if (ph > MathConstants<float>::twoPi) ph -= MathConstants<float>::twoPi; };
         for (int i = 0; i < n; ++i)
         {
             echo.time += glide * (target - echo.time);
-            float d = echo.time;
-            if (type == 0) { echo.wow += wowInc; if (echo.wow > MathConstants<float>::twoPi) echo.wow -= MathConstants<float>::twoPi; d += wowDepth * std::sin (echo.wow); }
-            const float yl = echo.read (echo.l, d), yr = echo.read (echo.r, d);
-            // the repeats' colour, in the feedback: each one passes the tone again
+            float dl = echo.time, dr = echo.time;
+            if (tape)   { wrap (echo.wow, wowInc); wrap (echo.flutter, flutInc); const float m = wowDepth * std::sin (echo.wow) + flutDepth * std::sin (echo.flutter); dl += m; dr += m; }
+            if (analog) { wrap (echo.chorus, choInc); dl += choDepth * std::sin (echo.chorus); dr += choDepth * std::cos (echo.chorus); }
+            const float yl = echo.read (echo.l, dl), yr = echo.read (echo.r, dr);
+            // the repeats' colour, in the feedback: each one passes the tone (and the tape, or the chips) again
             float f[2] = { yl, yr };
             for (int c = 0; c < 2; ++c)
             {
                 echo.lp[c] += lc * (f[c] - echo.lp[c]); f[c] = echo.lp[c];
                 echo.hp[c] += hc * (f[c] - echo.hp[c]); f[c] -= echo.hp[c];
-                if (type == 0) f[c] = std::tanh (1.3f * f[c]) / 1.3f;
+                if (drive > 0.0f) f[c] = std::tanh (drive * f[c]) / drive;
             }
-            const float x = v.send[(size_t) i];
-            if (type == 2) { echo.l[(size_t) echo.w] = x + fb * f[1]; echo.r[(size_t) echo.w] = fb * f[0]; }
-            else           { echo.l[(size_t) echo.w] = x + fb * f[0]; echo.r[(size_t) echo.w] = x + fb * f[1]; }
+            float x = v.send[(size_t) i];
+            if (drive > 0.0f) x = std::tanh (drive * 0.7f * x) / (drive * 0.7f);   // (the first repeat is coloured too)
+            if (pingPong) { echo.l[(size_t) echo.w] = x + fb * f[1]; echo.r[(size_t) echo.w] = fb * f[0]; }
+            else          { echo.l[(size_t) echo.w] = x + fb * f[0]; echo.r[(size_t) echo.w] = x + fb * f[1]; }
             if (++echo.w >= size) echo.w = 0;
-            const float k = 2.0f * amt * ret (i) * og;   // at the default (half) the first repeat about as loud as the word
-            oL[i] += yl * k; oR[i] += yr * k;
+            // (Tape and Analog: what is heard is what goes round, so even the first repeat has their colour)
+            const float duck = echoDuck + (1.0f - echoDuck) * fxDuck[(size_t) i];
+            const float k = (coloured ? 2.8f : 2.0f) * amt * ret (i) * og * duck;   // at the default (half) the first repeat about as loud as the word
+            oL[i] += (coloured ? f[0] : yl) * k;
+            oR[i] += (coloured ? f[1] : yr) * k;
         }
     }
 }
