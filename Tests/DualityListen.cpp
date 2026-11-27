@@ -96,10 +96,16 @@ int main (int argc, char** argv)
     { std::cerr << "model: " << err << "\n"; return 3; }
     std::cout << "model: " << DualityWords::modelFile().getFullPathName() << " (" << DualityWords::modelFile().getSize() / 1000000 << " MB)\n";
 
+    if (! DualityWords::alignerPresent())
+    {
+        if (! DualityWords::fetchAligner ({}, abort, err)) std::cout << "aligner: " << err << " (the rougher times)\n";
+    }
+    std::cout << "aligner: " << DualityWords::alignerLibraryFile().getFullPathName() << ", " << DualityWords::alignerModelFile().getFileName() << "\n";
     DualityWords::Ears ears;
     const auto t = Time::getMillisecondCounterHiRes();
     auto words = ears.hear (a16, {}, abort, err);
     std::cout << "heard " << (int) words.size() << " words in " << String ((Time::getMillisecondCounterHiRes() - t) / 1000.0, 1) << " s" << (err.isNotEmpty() ? " (" + err + ")" : String()) << "\n";
+    std::cout << (ears.aligned ? "ALIGNED by the aligner" : "NOT ALIGNED (rough times)") << "\n";
     print (words);
     if (composite)
     {
@@ -117,7 +123,7 @@ int main (int argc, char** argv)
     if (argc > 2 && ! composite)
     {
         std::cout << "-- lyrics placed:\n";
-        print (DualityWords::placeLyrics (words, File (String (argv[2])).loadFileAsString(), 0, a16.size() / 16000.0));
+        print (ears.placeLyrics (words, File (String (argv[2])).loadFileAsString(), a16));
     }
     return words.empty() ? 1 : 0;
 }

@@ -31,6 +31,26 @@ namespace DualityWords
     juce::String modelURL();
     bool fetchModel (std::function<void (float)> progress, const std::atomic<bool>& abort, juce::String& error);
 
+    // the word aligner (wav2vec2, ~95 MB, and the ONNX Runtime library that runs it, ~30 MB): once it knows the words, it
+    // finds exactly where each is sung - the listening model's own times run late on held notes
+    juce::File alignerModelFile();
+    juce::File alignerLibraryFile();
+    bool alignerPresent();
+    bool fetchAligner (std::function<void (float)> progress, const std::atomic<bool>& abort, juce::String& error);
+
+    class Aligner
+    {
+    public:
+        Aligner();
+        ~Aligner();
+        bool load (juce::String& error);
+        // the words of one phrase (16 kHz audio from `offset` seconds), each given its start and end; false if it could not
+        bool align (std::vector<Word>& words, const float* audio16k, int numSamples, double offset);
+    private:
+        struct Impl;
+        std::unique_ptr<Impl> impl;
+    };
+
     // any audio -> one channel at 16 kHz, what the model hears
     std::vector<float> toListeningRate (const juce::AudioBuffer<float>& audio, double sampleRate);
 
@@ -46,10 +66,20 @@ namespace DualityWords
         // the words of a vocal (16 kHz, one channel), each with its start and end in seconds
         std::vector<Word> hear (const std::vector<float>& audio16k, std::function<void (float)> progress,
                                 const std::atomic<bool>& abort, juce::String& error);
+        // the lyrics as written, put on the vocal: matched to the heard words, then each phrase lined up by the aligner
+        std::vector<Word> placeLyrics (const std::vector<Word>& heard, const juce::String& lyrics, const std::vector<float>& audio16k);
+        bool aligned = false;   // the last hearing was lined up by the aligner (not just the listening model's times)
     private:
         whisper_context* ctx = nullptr;
+        Aligner aligner;
+        bool alignerTried = false, alignerOk = false;
+        bool ensureAligner();
         JUCE_DECLARE_NON_COPYABLE (Ears)
     };
+
+    // the CTC alignment itself: log-probabilities [frames x 32] of the letters, words -> first and last frame of each
+    bool ctcAlign (const std::vector<float>& logProbs, int frames, const std::vector<juce::String>& words,
+                   std::vector<int>& firstFrame, std::vector<int>& lastFrame);
 
     // a phrase's words slid into place: the shift that puts the most of them on sung sound (in [from, to] seconds)
     void fitToVoice (std::vector<Word>& words, const std::vector<float>& audio16k, double from, double to);

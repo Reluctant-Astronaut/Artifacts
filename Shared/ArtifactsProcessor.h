@@ -33,7 +33,7 @@ struct WordsView
 // What the Words window asks of the vocal's words (ids are WordsView::Word::id)
 struct WordsAction
 {
-    enum Kind { select, edit, remove, transcribe, lyrics, locate, effect, settings } kind = select;
+    enum Kind { select, edit, remove, transcribe, lyrics, locate, effect, settings, retime } kind = select;   // retime: first = the word, values = { start, end } (seconds into the event)
     int first = -1, last = -1;        // select: the range (-1: none); edit: first; remove: the range; effect: first = which, last = on (1) / off (0)
     juce::String text;                // edit: the new text ("" removes the word); lyrics: the lyrics
     double time = 0.0;                // locate: seconds into the event

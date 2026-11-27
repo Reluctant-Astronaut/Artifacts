@@ -264,7 +264,7 @@ void DocumentController::setHearing (const std::string& id, Hearing h, float pro
     e.state = h; e.progress = progress; e.error = error;
 }
 
-void DocumentController::hear (ARAAudioSource* src, bool again)
+void DocumentController::hear (ARAAudioSource* src, bool again, bool lyricsOnly)
 {
     const auto id = src->getPersistentID();
     {
@@ -275,7 +275,7 @@ void DocumentController::hear (ARAAudioSource* src, bool again)
         if (! src->isSampleAccessEnabled()) return;   // (the host lets Duality read it a moment later)
         e.state = Hearing::waiting; e.progress = 0.0f; e.error.clear();
         auto reader = std::make_shared<std::unique_ptr<AudioFormatReader>> (std::make_unique<ARAAudioSourceReader> (src));
-        jobs.push_back ({ id, reader, src->getSampleRate(), src->getSampleCount(), src->getChannelCount() });
+        jobs.push_back ({ id, reader, src->getSampleRate(), src->getSampleCount(), src->getChannelCount(), lyricsOnly });
     }
     if (listener == nullptr)
     {
@@ -319,13 +319,38 @@ void DocumentController::listen (Thread& thread)
         const auto a16 = DualityWords::toListeningRate (audio, job.sampleRate);
         audio.setSize (1, 1);
 
-        // 2. the model, fetched the first time
+        // 2. the models, fetched the first time: the listening model, and the aligner (without it, the rougher times)
         String err;
-        if (! DualityWords::modelFile().existsAsFile())
+        if (! job.lyricsOnly && ! DualityWords::modelFile().existsAsFile())
         {
             setHearing (job.id, Hearing::fetching, 0.0f);
             if (! DualityWords::fetchModel ([&] (float p) { setHearing (job.id, Hearing::fetching, p); }, stopping, err))
             { if (stopping.load()) return; setHearing (job.id, Hearing::failed, 0.0f, err); continue; }
+        }
+        if (! DualityWords::alignerPresent())
+        {
+            setHearing (job.id, Hearing::fetching, 0.0f);
+            String alignErr;
+            DualityWords::fetchAligner ([&] (float p) { setHearing (job.id, Hearing::fetching, p); }, stopping, alignErr);
+            if (stopping.load()) return;
+        }
+
+        if (job.lyricsOnly)   // 3'. only the pasted lyrics, put on the vocal
+        {
+            std::vector<DualityWords::Word> heard; String lyrics;
+            {
+                std::lock_guard<std::mutex> w (wordsMutex);
+                auto& e = wordsBySource[job.id];
+                heard = e.words; lyrics = e.lyrics;
+            }
+            setHearing (job.id, Hearing::hearing, 0.5f);
+            auto placed = ears.placeLyrics (heard, lyrics, a16);
+            std::lock_guard<std::mutex> w (wordsMutex);
+            auto& e = wordsBySource[job.id];
+            e.words = std::move (placed); e.lyrics.clear();
+            e.state = Hearing::done; e.progress = 1.0f; e.error.clear();
+            publishMarks (job.id);
+            continue;
         }
 
         // 3. the words
@@ -333,13 +358,13 @@ void DocumentController::listen (Thread& thread)
         auto words = ears.hear (a16, [&] (float p) { setHearing (job.id, Hearing::hearing, p); }, stopping, err);
         if (stopping.load()) return;
         if (err.isNotEmpty() && words.empty()) { setHearing (job.id, Hearing::failed, 0.0f, err); continue; }
+        String pending;
+        { std::lock_guard<std::mutex> w (wordsMutex); pending = wordsBySource[job.id].lyrics; }
+        if (pending.isNotEmpty())   // lyrics pasted while it listened: those words, on the vocal
+            words = ears.placeLyrics (words, pending, a16);
         std::lock_guard<std::mutex> w (wordsMutex);
         auto& e = wordsBySource[job.id];
-        if (e.lyrics.isNotEmpty())   // lyrics pasted while it listened: those words, on what it heard
-        {
-            words = DualityWords::placeLyrics (words, e.lyrics, 0.0, (double) a16.size() / 16000.0);
-            e.lyrics.clear();
-        }
+        e.lyrics.clear();
         e.words = std::move (words); e.state = Hearing::done; e.progress = 1.0f; e.error.clear();
         publishMarks (job.id);
     }
@@ -396,15 +421,17 @@ void DocumentController::placeLyrics (ARAAudioSource* src, const String& lyrics)
     {
         std::lock_guard<std::mutex> w (wordsMutex);
         auto& e = wordsBySource[src->getPersistentID()];
+        e.lyrics = lyrics;   // placed on the vocal in the background (or, still listening, when it is done)
         if (e.state == Hearing::done)
         {
+            // at once roughly (so the words show), then exactly when the aligner has been through the vocal
             e.words = DualityWords::placeLyrics (e.words, lyrics, 0.0, src->getDuration());
             publishMarks (src->getPersistentID());
-            return;
         }
-        e.lyrics = lyrics;   // still listening (or not yet): placed when it is done
     }
-    hear (src, wordsOf (src).state == Hearing::failed);
+    const auto st = wordsOf (src).state;
+    if (st == Hearing::done) hear (src, true, true);
+    else hear (src, st == Hearing::failed);
 }
 static void putSettings (DualityWords::Word& wd, int effect, const std::vector<float>& v)
 {
@@ -432,6 +459,22 @@ void DocumentController::setWordSettings (ARAAudioSource* src, int effect, doubl
     for (auto& wd : ws)
         if (wd.selected && wd.t1 > from && wd.t0 < to && (wd.effects >> effect & 1) != 0)
             putSettings (wd, effect, settings);
+    publishMarks (src->getPersistentID());
+}
+
+void DocumentController::retimeWord (ARAAudioSource* src, int index, double t0, double t1)
+{
+    std::lock_guard<std::mutex> w (wordsMutex);
+    auto& ws = wordsBySource[src->getPersistentID()].words;
+    if (index < 0 || index >= (int) ws.size()) return;
+    // it keeps its place among its neighbours; a neighbour it now overlaps gives way
+    if (index > 0) t0 = jmax (t0, ws[(size_t) index - 1].t0 + 0.03);
+    if (index + 1 < (int) ws.size()) t1 = jmin (t1, ws[(size_t) index + 1].t1 - 0.03);
+    t1 = jmax (t1, t0 + 0.03);
+    auto& wd = ws[(size_t) index];
+    wd.t0 = t0; wd.t1 = t1; wd.confidence = 1.0f;
+    if (index > 0 && ws[(size_t) index - 1].t1 > t0) ws[(size_t) index - 1].t1 = t0;
+    if (index + 1 < (int) ws.size() && ws[(size_t) index + 1].t0 < t1) ws[(size_t) index + 1].t0 = t1;
     publishMarks (src->getPersistentID());
 }
 

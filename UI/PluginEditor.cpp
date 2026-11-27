@@ -2194,7 +2194,7 @@ void WordsWindow::paintLive (juce::Graphics& g)
     else if (view.playhead >= 0.0) t0 = view.playhead - span * 0.3;
     t0 = jlimit (0.0, jmax (0.0, len - span), t0);
     shownT0 = t0; shownSpan = span; shownX0 = x0; shownW = w;
-    hits.clear();
+    hits.clear(); bands.clear();
     if (lyricsPage != nullptr) return;   // the lyrics page covers the rest
     auto xAt = [&] (double t) { return x0 + (float) ((t - t0) / span) * w; };
     const float wordsH = hasWords ? 40.0f : 0.0f;
@@ -2304,7 +2304,19 @@ void WordsWindow::paintLive (juce::Graphics& g)
             // the word's span on the waveform: faint ticks where it starts and ends
             g.setColour (ink.withAlpha (wd.selected ? 0.35f : 0.12f));
             g.drawLine (a, cy - maxA - 2.0f, a, cy + maxA + 2.0f, 0.6f);
-            if (wd.selected) { g.setColour (Colour (0xffffb347).withAlpha (0.18f)); g.fillRect (a, cy - maxA - 2.0f, b - a, 2 * maxA + 4.0f); }
+            if (wd.selected)
+            {
+                // its band on the waveform, with handles at its edges: drag to move it, or to set its start or end
+                const Rectangle<float> band (a, cy - maxA - 2.0f, jmax (2.0f, b - a), 2 * maxA + 4.0f);
+                bands.push_back ({ band, index });
+                g.setColour (Colour (0xffffb347).withAlpha (0.18f)); g.fillRect (band);
+                g.setColour (Colour (0xffc4561a).withAlpha (0.7f));
+                for (float ex : { band.getX(), band.getRight() })
+                {
+                    g.fillRect (ex - 0.75f, band.getY(), 1.5f, band.getHeight());
+                    g.fillRoundedRectangle (ex - 2.5f, band.getCentreY() - 7.0f, 5.0f, 14.0f, 1.5f);
+                }
+            }
         }
         g.restoreState();
     }
@@ -2345,6 +2357,7 @@ void WordsWindow::paintLive (juce::Graphics& g)
 // selected ones; tap the waveform to move the song there; scroll while the song is stopped
 void WordsWindow::setView (WordsView v)
 {
+    if (retime != Retime::none) return;   // (a word is being moved by hand: the window keeps its own until it lets go)
     live = v.ara;
     view = std::move (v);
     if (wordField != nullptr && editingId >= 0)   // the word being corrected moves with the window
@@ -2414,6 +2427,18 @@ void WordsWindow::mouseDown (const juce::MouseEvent& e)
         selectRange (from, i);
         return;
     }
+    {
+        int bi = -1;
+        const auto rt = retimeAt (p, bi);
+        if (rt != Retime::none)   // timing by hand
+        {
+            retime = rt; downX = p.x; retimed.clear();
+            for (int i = 0; i < (int) view.words.size(); ++i)
+                if (rt == Retime::move ? view.words[(size_t) i].selected : i == bi)
+                    retimed.push_back ({ i, view.words[(size_t) i].t0, view.words[(size_t) i].t1 });
+            return;
+        }
+    }
     if (waveArea.contains (p) && onAction)
     {
         WordsAction a; a.kind = WordsAction::locate;
@@ -2422,14 +2447,67 @@ void WordsWindow::mouseDown (const juce::MouseEvent& e)
     }
 }
 
+WordsWindow::Retime WordsWindow::retimeAt (juce::Point<float> p, int& index) const
+{
+    for (auto& b : bands)
+    {
+        if (! b.box.expanded (6.0f, 0.0f).contains (p)) continue;
+        index = b.index;
+        if (std::abs (p.x - b.box.getX()) <= 5.0f) return Retime::start;
+        if (std::abs (p.x - b.box.getRight()) <= 5.0f) return Retime::end;
+        if (b.box.contains (p)) return Retime::move;
+    }
+    return Retime::none;
+}
+
+void WordsWindow::mouseMove (const juce::MouseEvent& e)
+{
+    if (! live) return;
+    int i = -1;
+    const auto rt = retimeAt (e.position, i);
+    setMouseCursor (rt == Retime::start || rt == Retime::end ? juce::MouseCursor::LeftRightResizeCursor
+                  : rt == Retime::move ? juce::MouseCursor::DraggingHandCursor : juce::MouseCursor::IBeamCursor);
+}
+
 void WordsWindow::mouseDrag (const juce::MouseEvent& e)
 {
+    if (live && retime != Retime::none)   // the word(s) follow the mouse; the times are sent when it lets go
+    {
+        const double dt = (e.position.x - downX) / shownW * shownSpan;
+        for (auto& o : retimed)
+        {
+            auto& w = view.words[(size_t) o.index];
+            if (retime == Retime::move)  { w.t0 = juce::jmax (0.0, o.t0 + dt); w.t1 = w.t0 + (o.t1 - o.t0); }
+            if (retime == Retime::start) w.t0 = juce::jlimit (0.0, o.t1 - 0.03, o.t0 + dt);
+            if (retime == Retime::end)   w.t1 = juce::jmax (o.t0 + 0.03, o.t1 + dt);
+        }
+        repaint();
+        return;
+    }
     if (! live || anchor < 0) return;
     const int i = hitAt (e.position, true);
     if (i >= 0) { dragged = true; selectRange (anchor, i); }
 }
 
-void WordsWindow::mouseUp (const juce::MouseEvent&) { anchor = -1; }
+void WordsWindow::mouseUp (const juce::MouseEvent&)
+{
+    anchor = -1;
+    if (retime != Retime::none)
+    {
+        retime = Retime::none;
+        // (moved later: the last word first, so each lands before its neighbour does)
+        if (! retimed.empty() && view.words[(size_t) retimed.front().index].t0 > retimed.front().t0) std::reverse (retimed.begin(), retimed.end());
+        if (onAction)
+            for (auto& o : retimed)
+            {
+                const auto& w = view.words[(size_t) o.index];
+                if (std::abs (w.t0 - o.t0) < 1.0e-4 && std::abs (w.t1 - o.t1) < 1.0e-4) continue;
+                WordsAction a; a.kind = WordsAction::retime; a.first = w.id; a.values = { (float) w.t0, (float) w.t1 };
+                onAction (a);
+            }
+        retimed.clear();
+    }
+}
 
 void WordsWindow::mouseDoubleClick (const juce::MouseEvent& e)
 {

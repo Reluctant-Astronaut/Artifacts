@@ -1,5 +1,6 @@
 #include "DualityWords.h"
 #include "whisper.h"
+#include "onnxruntime_c_api.h"
 #include <algorithm>
 #include <cmath>
 
@@ -27,19 +28,19 @@ String modelURL()
 
 static constexpr int64 minModelBytes = 150 * 1024 * 1024;   // the real file is ~190 MB; anything much smaller is a broken download
 
-bool fetchModel (std::function<void (float)> progress, const std::atomic<bool>& abort, String& error)
+// a file fetched once into place (through a .part file, so a broken download never looks finished)
+static bool fetchFile (const String& url, const File& dest, int64 minBytes, std::function<void (float)> progress,
+                       const std::atomic<bool>& abort, String& error, int64 expectedBytes)
 {
-    const auto dest = modelFile();
-    if (dest.existsAsFile() && dest.getSize() >= minModelBytes) return true;
+    if (dest.existsAsFile() && dest.getSize() >= minBytes) return true;
     if (! dest.getParentDirectory().createDirectory()) { error = "COULDN'T MAKE THE MODEL FOLDER"; return false; }
     const auto part = dest.getSiblingFile (dest.getFileName() + ".part");
     part.deleteFile();
-
     int status = 0;
-    auto in = URL (modelURL()).createInputStream (URL::InputStreamOptions (URL::ParameterHandling::inAddress)
-                                                     .withConnectionTimeoutMs (20000)
-                                                     .withNumRedirectsToFollow (10)
-                                                     .withStatusCode (&status));
+    auto in = URL (url).createInputStream (URL::InputStreamOptions (URL::ParameterHandling::inAddress)
+                                              .withConnectionTimeoutMs (20000)
+                                              .withNumRedirectsToFollow (10)
+                                              .withStatusCode (&status));
     if (in == nullptr || (status != 0 && status != 200)) { error = "COULDN'T REACH THE MODEL (IS THE COMPUTER ONLINE?)"; return false; }
     const int64 total = in->getTotalLength();
     {
@@ -55,14 +56,61 @@ bool fetchModel (std::function<void (float)> progress, const std::atomic<bool>& 
             if (n == 0) { if (in->isExhausted() || (total > 0 && got >= total)) break; Thread::sleep (20); continue; }
             if (! out.write (buf.get(), (size_t) n)) { error = "COULDN'T WRITE THE MODEL (DISK FULL?)"; return false; }
             got += n;
-            if (progress) progress (total > 0 ? (float) ((double) got / (double) total) : jmin (0.99f, (float) got / 190.0e6f));
+            if (progress) progress (total > 0 ? (float) ((double) got / (double) total) : jmin (0.99f, (float) got / (float) expectedBytes));
         }
         out.flush();
     }
-    if (part.getSize() < minModelBytes) { part.deleteFile(); error = "THE MODEL DOWNLOAD WAS INCOMPLETE"; return false; }
+    if (part.getSize() < minBytes) { part.deleteFile(); error = "THE MODEL DOWNLOAD WAS INCOMPLETE"; return false; }
     dest.deleteFile();
     if (! part.moveFileTo (dest)) { error = "COULDN'T SAVE THE MODEL"; return false; }
     return true;
+}
+
+bool fetchModel (std::function<void (float)> progress, const std::atomic<bool>& abort, String& error)
+{
+    return fetchFile (modelURL(), modelFile(), minModelBytes, progress, abort, error, 190000000);
+}
+
+//==============================================================================
+// the aligner: its model and its engine, from the plug-ins' own release (the files are MIT / Apache-2.0)
+static String alignerURL (const String& file) { return "https://github.com/Reluctant-Astronaut/Artifacts/releases/download/models/" + file; }
+static String libraryName()
+{
+   #if JUCE_MAC
+    return "libonnxruntime.dylib";
+   #elif JUCE_WINDOWS
+    return "onnxruntime.dll";
+   #else
+    return "libonnxruntime-linux.so";
+   #endif
+}
+
+File alignerModelFile()
+{
+    const auto env = SystemStats::getEnvironmentVariable ("DUALITY_ALIGNER", {});
+    if (env.isNotEmpty()) return File (env);
+    return modelFile().getSiblingFile ("w2v-model_quantized.onnx");
+}
+
+File alignerLibraryFile()
+{
+    const auto env = SystemStats::getEnvironmentVariable ("DUALITY_ORT", {});
+    if (env.isNotEmpty()) return File (env);
+    return modelFile().getSiblingFile (libraryName());
+}
+
+bool alignerPresent()
+{
+    return alignerModelFile().getSize() > 80 * 1024 * 1024 && alignerLibraryFile().getSize() > 5 * 1024 * 1024;
+}
+
+bool fetchAligner (std::function<void (float)> progress, const std::atomic<bool>& abort, String& error)
+{
+    // the engine (a small part of the wait), then the model
+    if (! fetchFile (alignerURL (libraryName()), alignerLibraryFile(), 5 * 1024 * 1024,
+                     [&] (float p) { if (progress) progress (p * 0.25f); }, abort, error, 30000000)) return false;
+    return fetchFile (alignerURL ("w2v-model_quantized.onnx"), alignerModelFile(), 80 * 1024 * 1024,
+                      [&] (float p) { if (progress) progress (0.25f + p * 0.75f); }, abort, error, 95286046);
 }
 
 //==============================================================================
@@ -215,6 +263,210 @@ void refineStarts (std::vector<Word>& words, const std::vector<float>& a)
     }
 }
 
+//==============================================================================
+// The word aligner: wav2vec2 (a letter recogniser, run by ONNX Runtime, loaded from its library the first time) gives,
+// for every 20 ms, how likely each letter is; the words' letters are then laid along the phrase in the most likely way
+// (CTC alignment). A word starts at the first frame of its first letter and ends at the last frame of its last.
+static int letterIndex (juce_wchar c)
+{
+    // the model's letters (its vocab.json): 0 = nothing (blank), 4 = between words
+    static const char* order = "ETAONIHSRDLUMWCFGYPBVK'XJQZ";   // indices 5..31
+    c = CharacterFunctions::toUpperCase (c);
+    if (c == 0x2019) c = '\'';
+    for (int i = 0; order[i] != 0; ++i) if ((juce_wchar) order[i] == c) return 5 + i;
+    return -1;
+}
+
+bool ctcAlign (const std::vector<float>& lp, int T, const std::vector<String>& words, std::vector<int>& firstFrame, std::vector<int>& lastFrame)
+{
+    // the extended sequence: blank, letter, blank, letter, ... blank (a word's letters, then the next word's)
+    std::vector<int> S { 0 }, wordOf { -1 };
+    for (int w = 0; w < (int) words.size(); ++w)
+        for (auto c : words[(size_t) w])
+            if (const int k = letterIndex (c); k >= 0) { S.push_back (k); wordOf.push_back (w); S.push_back (0); wordOf.push_back (-1); }
+    const int L = (int) S.size(), C = 32;
+    if (L < 3 || T < (L - 1) / 2 + 1) return false;
+    const float ninf = -1.0e30f;
+    std::vector<float> prev ((size_t) L, ninf), cur ((size_t) L, ninf);
+    std::vector<uint8_t> back ((size_t) T * (size_t) L, 0);   // 0: stay, 1: from s-1, 2: from s-2
+    prev[0] = lp[(size_t) S[0]]; prev[1] = lp[(size_t) S[1]];
+    for (int t = 1; t < T; ++t)
+    {
+        const float* row = lp.data() + (size_t) t * C;
+        for (int s = 0; s < L; ++s)
+        {
+            float best = prev[(size_t) s]; uint8_t arg = 0;
+            if (s >= 1 && prev[(size_t) s - 1] > best) { best = prev[(size_t) s - 1]; arg = 1; }
+            if (s >= 2 && S[(size_t) s] != 0 && S[(size_t) s] != S[(size_t) s - 2] && prev[(size_t) s - 2] > best) { best = prev[(size_t) s - 2]; arg = 2; }
+            cur[(size_t) s] = best <= ninf * 0.5f ? ninf : best + row[S[(size_t) s]];
+            back[(size_t) t * (size_t) L + (size_t) s] = arg;
+        }
+        std::swap (prev, cur);
+    }
+    int s = prev[(size_t) L - 1] > prev[(size_t) L - 2] ? L - 1 : L - 2;
+    if (prev[(size_t) s] <= ninf * 0.5f) return false;
+    firstFrame.assign (words.size(), -1); lastFrame.assign (words.size(), -1);
+    for (int t = T - 1; t >= 0; --t)
+    {
+        const int w = wordOf[(size_t) s];
+        if (w >= 0) { firstFrame[(size_t) w] = t; if (lastFrame[(size_t) w] < 0) lastFrame[(size_t) w] = t; }
+        s -= back[(size_t) t * (size_t) L + (size_t) s];
+    }
+    return true;
+}
+
+struct Aligner::Impl
+{
+    DynamicLibrary lib;
+    const OrtApi* api = nullptr;
+    OrtEnv* env = nullptr;
+    OrtSession* session = nullptr;
+    OrtMemoryInfo* memory = nullptr;
+    ~Impl()
+    {
+        if (api != nullptr)
+        {
+            if (session != nullptr) api->ReleaseSession (session);
+            if (memory != nullptr) api->ReleaseMemoryInfo (memory);
+            if (env != nullptr) api->ReleaseEnv (env);
+        }
+    }
+    bool ok (OrtStatus* st, String& error)
+    {
+        if (st == nullptr) return true;
+        error = "ALIGNER: " + String (api->GetErrorMessage (st)).toUpperCase().substring (0, 80);
+        api->ReleaseStatus (st);
+        return false;
+    }
+};
+
+Aligner::Aligner() = default;
+Aligner::~Aligner() = default;
+
+bool Aligner::load (String& error)
+{
+    if (impl != nullptr && impl->session != nullptr) return true;
+    impl = std::make_unique<Impl>();
+    if (! impl->lib.open (alignerLibraryFile().getFullPathName())) { error = "THE ALIGNER'S ENGINE WOULD NOT LOAD"; impl.reset(); return false; }
+    using GetApiBase = const OrtApiBase* (ORT_API_CALL*)();
+    auto base = (GetApiBase) impl->lib.getFunction ("OrtGetApiBase");
+    if (base == nullptr || base() == nullptr) { error = "THE ALIGNER'S ENGINE IS NOT ONNX RUNTIME"; impl.reset(); return false; }
+    impl->api = base()->GetApi (ORT_API_VERSION);
+    if (impl->api == nullptr) { error = "THE ALIGNER'S ENGINE IS TOO OLD"; impl.reset(); return false; }
+    auto* api = impl->api;
+    if (! impl->ok (api->CreateEnv (ORT_LOGGING_LEVEL_ERROR, "duality", &impl->env), error)) { impl.reset(); return false; }
+    OrtSessionOptions* so = nullptr;
+    if (! impl->ok (api->CreateSessionOptions (&so), error)) { impl.reset(); return false; }
+    api->SetIntraOpNumThreads (so, jlimit (1, 4, SystemStats::getNumPhysicalCpus() / 2));
+    api->SetSessionGraphOptimizationLevel (so, ORT_ENABLE_ALL);
+   #if JUCE_WINDOWS
+    const auto path = alignerModelFile().getFullPathName();
+    OrtStatus* st = api->CreateSession (impl->env, path.toWideCharPointer(), so, &impl->session);
+   #else
+    OrtStatus* st = api->CreateSession (impl->env, alignerModelFile().getFullPathName().toRawUTF8(), so, &impl->session);
+   #endif
+    api->ReleaseSessionOptions (so);
+    if (! impl->ok (st, error)) { impl.reset(); return false; }
+    if (! impl->ok (api->CreateCpuMemoryInfo (OrtArenaAllocator, OrtMemTypeDefault, &impl->memory), error)) { impl.reset(); return false; }
+    return true;
+}
+
+bool Aligner::align (std::vector<Word>& words, const float* audio, int n, double offset)
+{
+    if (impl == nullptr || impl->session == nullptr || words.empty() || n < 1600) return false;
+    auto* api = impl->api;
+    // the model hears the phrase normalised (zero mean, unit variance)
+    std::vector<float> x (audio, audio + n);
+    double mean = 0; for (float v : x) mean += v; mean /= n;
+    double var = 0; for (float v : x) var += (v - mean) * (v - mean); var /= n;
+    const float k = (float) (1.0 / std::sqrt (var + 1.0e-7));
+    for (auto& v : x) v = (float) ((v - mean) * k);
+    int64_t shape[2] { 1, (int64_t) n };
+    OrtValue* in = nullptr; OrtValue* out = nullptr;
+    String err;
+    if (! impl->ok (api->CreateTensorWithDataAsOrtValue (impl->memory, x.data(), x.size() * sizeof (float), shape, 2,
+                                                          ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, &in), err)) return false;
+    const char* inNames[] { "input_values" };
+    const char* outNames[] { "logits" };
+    const bool ran = impl->ok (api->Run (impl->session, nullptr, inNames, &in, 1, outNames, 1, &out), err);
+    api->ReleaseValue (in);
+    if (! ran || out == nullptr) return false;
+    float* logits = nullptr;
+    OrtTensorTypeAndShapeInfo* info = nullptr;
+    int64_t dims[3] { 0, 0, 0 };
+    bool got = impl->ok (api->GetTensorMutableData (out, (void**) &logits), err) && impl->ok (api->GetTensorTypeAndShape (out, &info), err);
+    if (got) { got = impl->ok (api->GetDimensions (info, dims, 3), err); api->ReleaseTensorTypeAndShapeInfo (info); }
+    const int T = (int) dims[1];
+    if (! got || dims[2] != 32 || T < 2) { api->ReleaseValue (out); return false; }
+    // log-probabilities of the letters, frame by frame
+    std::vector<float> lp ((size_t) T * 32);
+    for (int t = 0; t < T; ++t)
+    {
+        const float* r = logits + (size_t) t * 32;
+        float m = r[0]; for (int c = 1; c < 32; ++c) m = jmax (m, r[c]);
+        double sum = 0; for (int c = 0; c < 32; ++c) sum += std::exp (r[c] - m);
+        const float lse = m + (float) std::log (sum);
+        for (int c = 0; c < 32; ++c) lp[(size_t) t * 32 + (size_t) c] = r[c] - lse;
+    }
+    api->ReleaseValue (out);
+    std::vector<String> texts; for (auto& w : words) texts.push_back (w.text);
+    std::vector<int> first, last;
+    if (! ctcAlign (lp, T, texts, first, last)) return false;
+    const double frame = (double) n / 16000.0 / (double) T;   // ~20 ms
+    for (size_t i = 0; i < words.size(); ++i)
+    {
+        if (first[i] < 0) continue;   // (a word with no letters, e.g. "2": keeps its time, set below)
+        words[i].t0 = offset + first[i] * frame;
+        words[i].t1 = offset + (last[i] + 1) * frame;
+    }
+    // a word lasts as long as it is sung: its end runs on through held sound, up to the next word or the quiet
+    {
+        const auto db = framesDb (audio, n);
+        float loud = -200.0f; for (float v : db) loud = jmax (loud, v);
+        auto voiced = [&] (double t) { const int f = (int) ((t - offset) * 100.0); return f >= 0 && f < (int) db.size() && db[(size_t) f] > loud - 30.0f; };
+        for (size_t i = 0; i < words.size(); ++i)
+        {
+            if (first[i] < 0) continue;
+            const double limit = i + 1 < words.size() && first[i + 1] >= 0 ? words[i + 1].t0 : offset + (double) n / 16000.0;
+            while (words[i].t1 + 0.01 <= limit && voiced (words[i].t1)) words[i].t1 += 0.01;
+        }
+    }
+    // words without letters: between their neighbours
+    for (size_t i = 0; i < words.size(); ++i)
+        if (first[i] < 0)
+        {
+            const double a = i > 0 ? words[i - 1].t1 : offset, b = i + 1 < words.size() && first[i + 1] >= 0 ? words[i + 1].t0 : a + 0.3;
+            words[i].t0 = a; words[i].t1 = jmax (a + 0.05, b);
+        }
+    return true;
+}
+
+bool Ears::ensureAligner()
+{
+    if (! alignerTried && alignerPresent()) { alignerTried = true; String e; alignerOk = aligner.load (e); }
+    return alignerOk;
+}
+
+std::vector<Word> Ears::placeLyrics (const std::vector<Word>& heard, const String& lyrics, const std::vector<float>& audio)
+{
+    const double length = (double) audio.size() / 16000.0;
+    auto out = DualityWords::placeLyrics (heard, lyrics, 0.0, length);
+    if (out.empty() || ! ensureAligner()) return out;
+    // each phrase of the vocal with the lyrics' words that fell in it (by their rough times), lined up exactly
+    for (auto& s : sungStretches (audio))
+    {
+        const double a = s.first / 16000.0, b = s.second / 16000.0;
+        std::vector<size_t> idx;
+        for (size_t i = 0; i < out.size(); ++i) { const double mid = 0.5 * (out[i].t0 + out[i].t1); if (mid >= a && mid < b) idx.push_back (i); }
+        if (idx.empty()) continue;
+        std::vector<Word> phrase; for (auto i : idx) phrase.push_back (out[i]);
+        if (aligner.align (phrase, audio.data() + s.first, s.second - s.first, a))
+            for (size_t k = 0; k < idx.size(); ++k) { out[idx[k]].t0 = phrase[k].t0; out[idx[k]].t1 = phrase[k].t1; out[idx[k]].confidence = 1.0f; }
+    }
+    std::sort (out.begin(), out.end(), [] (auto& x, auto& y) { return x.t0 < y.t0; });
+    return out;
+}
+
 Ears::~Ears() { if (ctx != nullptr) whisper_free (ctx); }
 
 static void quietLog (ggml_log_level, const char*, void*) {}
@@ -246,6 +498,7 @@ std::vector<Word> Ears::hear (const std::vector<float>& audio, std::function<voi
 {
     std::vector<Word> words;
     if (! load (error)) return words;
+    aligned = false;
     const auto stretches = sungStretches (audio);
     double totalLen = 0; for (auto& s : stretches) totalLen += s.second - s.first;
     double done = 0;
@@ -305,14 +558,22 @@ std::vector<Word> Ears::hear (const std::vector<float>& audio, std::function<voi
             w.confidence = n > 0 ? sum / (float) n : 0.5f;
             phraseWords.push_back (w);
         }
-        fitToVoice (phraseWords, audio, offset, end);
+        // where each word is sung: the aligner when it is here (its times are exact), else the phrase's sound
+        bool placed = false;
+        if (ensureAligner() && ! phraseWords.empty())
+            placed = aligner.align (phraseWords, audio.data() + s.first, s.second - s.first, offset);
+        if (! placed)
+        {
+            fitToVoice (phraseWords, audio, offset, end);
+            refineStarts (phraseWords, audio);
+        }
+        aligned = aligned || placed;
         for (auto& w : phraseWords) words.push_back (w);
         done += s.second - s.first;
         if (progress) progress (totalLen > 0 ? (float) (done / totalLen) : 1.0f);
     }
     // in time order, never overlapping
     std::sort (words.begin(), words.end(), [] (auto& a, auto& b) { return a.t0 < b.t0; });
-    refineStarts (words, audio);
     for (size_t i = 1; i < words.size(); ++i)
         if (words[i].t0 < words[i - 1].t1) words[i - 1].t1 = jmax (words[i - 1].t0 + 0.02, words[i].t0);
     return words;

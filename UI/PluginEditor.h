@@ -147,6 +147,15 @@ private:
     int anchor = -1;          // the word a drag started on
     bool dragged = false;
     int hitAt (juce::Point<float>, bool nearest) const;
+    // timing by hand: a selected word's band on the waveform - drag inside it to move the word(s), drag its edges to
+    // set where it starts or ends
+    std::vector<Hit> bands;
+    enum class Retime { none, move, start, end } retime = Retime::none;
+    float downX = 0;
+    struct Orig { int index; double t0, t1; };
+    std::vector<Orig> retimed;
+    Retime retimeAt (juce::Point<float>, int& index) const;
+    void mouseMove (const juce::MouseEvent&) override;
     void selectRange (int a, int b);
     // correcting a word: a text field over it
     std::unique_ptr<juce::TextEditor> wordField;

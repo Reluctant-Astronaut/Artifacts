@@ -104,7 +104,7 @@ namespace DualityARA
             juce::String error, lyrics;               // lyrics: pasted while it was still listening, placed when it is done
         };
         Words wordsOf (juce::ARAAudioSource*);
-        void hear (juce::ARAAudioSource*, bool again);            // if not heard yet (or again)
+        void hear (juce::ARAAudioSource*, bool again, bool lyricsOnly = false);   // if not heard yet (or again; or only to place pasted lyrics)
         void selectWords (juce::ARAAudioSource*, int first, int last, double from, double to);   // -1: none (only those in [from, to])
         void editWord (juce::ARAAudioSource*, int index, const juce::String& text);   // "" removes it; "two words" splits it
         void removeWords (juce::ARAAudioSource*, int first, int last);
@@ -112,6 +112,7 @@ namespace DualityARA
         // on the selected words in [from, to]: an effect on (with these settings) or off; or new settings for those that have it
         void setEffect (juce::ARAAudioSource*, int effect, bool on, double from, double to, const std::vector<float>& settings);
         void setWordSettings (juce::ARAAudioSource*, int effect, double from, double to, const std::vector<float>& settings);
+        void retimeWord (juce::ARAAudioSource*, int index, double t0, double t1);   // timing by hand (the recording's time)
        #endif
 
         // the marked words of a recording, for the audio thread: [t0, t1) in the recording's time, and the effects on them
@@ -143,7 +144,7 @@ namespace DualityARA
        #if DUALITY_WORDS
         std::mutex wordsMutex;
         std::map<std::string, Words> wordsBySource;   // by the audio source's persistent ID
-        struct Job { std::string id; std::shared_ptr<std::unique_ptr<juce::AudioFormatReader>> reader; double sampleRate; juce::int64 length; int channels; };
+        struct Job { std::string id; std::shared_ptr<std::unique_ptr<juce::AudioFormatReader>> reader; double sampleRate; juce::int64 length; int channels; bool lyricsOnly = false; };
         std::deque<Job> jobs;
         std::atomic<bool> stopping { false };
         std::unique_ptr<juce::Thread> listener;

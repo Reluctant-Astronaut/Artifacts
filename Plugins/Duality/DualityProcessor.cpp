@@ -773,6 +773,9 @@ void DualityProcessor::wordsAction (const WordsAction& a)
         case WordsAction::transcribe: doc->hear (source, true); break;
         case WordsAction::effect:     doc->setEffect (source, a.first, a.last != 0, from, to, a.values); break;
         case WordsAction::settings:   doc->setWordSettings (source, a.first, from, to, a.values); break;
+        case WordsAction::retime:
+            if (a.values.size() >= 2) doc->retimeWord (source, a.first, from + a.values[0], from + a.values[1]);
+            break;
         case WordsAction::lyrics:     doc->placeLyrics (source, a.text); break;
         case WordsAction::locate:
             if (auto* pc = doc->getDocumentController()->getHostPlaybackController())
