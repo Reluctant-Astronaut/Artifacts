@@ -443,7 +443,13 @@ bool Aligner::align (std::vector<Word>& words, const float* audio, int n, double
 
 bool Ears::ensureAligner()
 {
-    if (! alignerTried && alignerPresent()) { alignerTried = true; String e; alignerOk = aligner.load (e); }
+    if (! alignerTried)
+    {
+        if (! alignerPresent()) { alignerError = "THE ALIGNER IS NOT DOWNLOADED"; return false; }
+        alignerTried = true;
+        String e; alignerOk = aligner.load (e);
+        alignerError = alignerOk ? String() : e;
+    }
     return alignerOk;
 }
 
@@ -498,7 +504,7 @@ std::vector<Word> Ears::hear (const std::vector<float>& audio, std::function<voi
 {
     std::vector<Word> words;
     if (! load (error)) return words;
-    aligned = false;
+    aligned = false; phrasesAligned = phrasesRough = 0;
     const auto stretches = sungStretches (audio);
     double totalLen = 0; for (auto& s : stretches) totalLen += s.second - s.first;
     double done = 0;
@@ -568,6 +574,7 @@ std::vector<Word> Ears::hear (const std::vector<float>& audio, std::function<voi
             refineStarts (phraseWords, audio);
         }
         aligned = aligned || placed;
+        if (! phraseWords.empty()) ++(placed ? phrasesAligned : phrasesRough);
         for (auto& w : phraseWords) words.push_back (w);
         done += s.second - s.first;
         if (progress) progress (totalLen > 0 ? (float) (done / totalLen) : 1.0f);

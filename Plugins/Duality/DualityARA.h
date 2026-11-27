@@ -102,6 +102,7 @@ namespace DualityARA
             Hearing state = Hearing::none;
             float progress = 0.0f;
             juce::String error, lyrics;               // lyrics: pasted while it was still listening, placed when it is done
+            juce::String note;                        // how the words were placed (aligned, or why not)
         };
         Words wordsOf (juce::ARAAudioSource*);
         void hear (juce::ARAAudioSource*, bool again, bool lyricsOnly = false);   // if not heard yet (or again; or only to place pasted lyrics)
@@ -152,6 +153,7 @@ namespace DualityARA
         void setHearing (const std::string& id, Hearing h, float progress, const juce::String& error = {});
         DualityWords::Ears ears;
         void publishMarks (const std::string& id);   // (wordsMutex held)
+        void writeLog (const std::string& id, const juce::String& note, const std::vector<DualityWords::Word>& words);
        #endif
         juce::SpinLock marksLock;
         std::map<std::string, std::shared_ptr<const Marks>> marks;

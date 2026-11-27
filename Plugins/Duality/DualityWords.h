@@ -69,6 +69,8 @@ namespace DualityWords
         // the lyrics as written, put on the vocal: matched to the heard words, then each phrase lined up by the aligner
         std::vector<Word> placeLyrics (const std::vector<Word>& heard, const juce::String& lyrics, const std::vector<float>& audio16k);
         bool aligned = false;   // the last hearing was lined up by the aligner (not just the listening model's times)
+        int phrasesAligned = 0, phrasesRough = 0;
+        juce::String alignerError;   // why the aligner is not in use, if it is not
     private:
         whisper_context* ctx = nullptr;
         Aligner aligner;

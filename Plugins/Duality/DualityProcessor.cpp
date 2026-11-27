@@ -78,7 +78,7 @@ AudioProcessorValueTreeState::ParameterLayout DualityProcessor::createLayout()
     p.push_back (std::make_unique<AudioParameterChoice> (ParameterID { "tfreeze", 1 }, "Throw Freeze", StringArray { "Off", "On" }, 0));
     p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "tdecay", 1 }, "Throw Decay", skewed (0.5f, 20.0f, 4.0f), 4.5f,
         AudioParameterFloatAttributes().withLabel ("s").withStringFromValueFunction ([] (float v, int) { return String (v, v < 10.0f ? 1 : 0) + " s"; })));
-    p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "tpre", 1 }, "Throw Pre-delay", skewed (0.0f, 250.0f, 50.0f), 90.0f,
+    p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "tpre", 1 }, "Throw Pre-delay", skewed (0.0f, 250.0f, 50.0f), 20.0f,
         AudioParameterFloatAttributes().withLabel ("ms").withStringFromValueFunction ([] (float v, int) { return String (roundToInt (v)) + " ms"; })));
     p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "tsize", 1 }, "Throw Size", NormalisableRange<float> (0.6f, 1.4f, 0.001f), 1.3f,
         AudioParameterFloatAttributes().withStringFromValueFunction ([] (float v, int) { return String (roundToInt (v * 100.0f)) + " %"; })));
@@ -360,7 +360,7 @@ void DualityProcessor::wordSends (const AudioBuffer<float>& dry, int n)
             send[(size_t) i] = 0.5f * (l[i] + r[i]) * env;
         }
     };
-    // a throw holds back while its word sounds and opens as the word ends (from the word's gate, before the voice)
+    // while a throw's word sounds (from its gate, before the voice) the throw is not ducked: it is heard with the word
     {
         const float hA = 1.0f - std::exp (-1.0f / (0.030f * (float) fxSampleRate)), hR = 1.0f - std::exp (-1.0f / (0.350f * (float) fxSampleRate));
         for (auto& v : throwVoices)
@@ -371,7 +371,7 @@ void DualityProcessor::wordSends (const AudioBuffer<float>& dry, int n)
             {
                 const float g = v.send[(size_t) i];
                 v.hold += (g > v.hold ? hA : hR) * (g - v.hold);
-                v.holdGain[(size_t) i] = 1.0f - 0.85f * v.hold;
+                v.holdGain[(size_t) i] = v.hold;   // 1 while its word sounds (and a moment after)
             }
         }
     }
@@ -452,7 +452,7 @@ void DualityProcessor::wordReturns (AudioBuffer<float>& out, int n)
         v.hall.setParameters (decay, jlimit (-1.0f, 1.0f, st[4]));
         v.hall.process (v.send.data(), v.outL.data(), v.outR.data(), n);
         const float lc = coef (jmin ((float) rate * 0.45f, 12000.0f)), hc = coef (120.0f);
-        const float g = jlimit (0.0f, 1.0f, st[5]) * 5.8f;   // (at the default amount the bloom a few dB under the word)
+        const float g = jlimit (0.0f, 1.0f, st[5]) * 0.8f;   // (at the default amount, a few dB under its word)
         for (int i = 0; i < n; ++i)
         {
             float x[2] = { v.outL[(size_t) i], v.outR[(size_t) i] };
@@ -461,7 +461,9 @@ void DualityProcessor::wordReturns (AudioBuffer<float>& out, int n)
                 v.lp[c] += lc * (x[c] - v.lp[c]); x[c] = v.lp[c];
                 v.hp[c] += hc * (x[c] - v.hp[c]); x[c] -= v.hp[c];
             }
-            const float duck = (throwDuck + (1.0f - throwDuck) * fxDuck[(size_t) i]) * v.holdGain[(size_t) i];
+            // the throw is heard with its word, at once; it is the next words that push its tail back
+            const float other = throwDuck + (1.0f - throwDuck) * fxDuck[(size_t) i];
+            const float duck = other + (1.0f - other) * v.holdGain[(size_t) i];
             const float k = g * ret (i) * og * duck;
             oL[i] += x[0] * k; oR[i] += x[1] * k;
         }
@@ -796,7 +798,7 @@ WordsView DualityProcessor::getWordsView()
             case H::fetching: v.status = "FETCHING THE LISTENING MODEL " + pc (words.progress) + " (ONCE)"; v.progress = words.progress; break;
             case H::hearing:  v.status = "HEARING THE WORDS " + pc (words.progress); v.progress = words.progress; break;
             case H::failed:   v.status = words.error + String::fromUTF8 ("  \xc2\xb7  PRESS TRANSCRIBE TO TRY AGAIN"); break;
-            case H::done:     if (v.words.empty()) v.status = "NO WORDS HEARD"; break;
+            case H::done:     v.status = v.words.empty() ? String ("NO WORDS HEARD") : String ((int) v.words.size()) + " WORDS" + (words.note.isNotEmpty() ? String::fromUTF8 (" \xc2\xb7 ") + words.note : String()); break;
         }
     }
    #endif

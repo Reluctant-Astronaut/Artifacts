@@ -362,12 +362,30 @@ void DocumentController::listen (Thread& thread)
         { std::lock_guard<std::mutex> w (wordsMutex); pending = wordsBySource[job.id].lyrics; }
         if (pending.isNotEmpty())   // lyrics pasted while it listened: those words, on the vocal
             words = ears.placeLyrics (words, pending, a16);
+        const String note = ears.phrasesRough == 0 && ears.phrasesAligned > 0 ? String ("ALIGNED")
+                          : ears.phrasesAligned > 0 ? "ALIGNED " + String (ears.phrasesAligned) + " OF " + String (ears.phrasesAligned + ears.phrasesRough) + " PHRASES"
+                          : "NOT ALIGNED: " + ears.alignerError;
+        writeLog (job.id, note, words);
         std::lock_guard<std::mutex> w (wordsMutex);
         auto& e = wordsBySource[job.id];
+        e.note = note;
         e.lyrics.clear();
         e.words = std::move (words); e.state = Hearing::done; e.progress = 1.0f; e.error.clear();
         publishMarks (job.id);
     }
+}
+
+// a small log beside the models (what was heard, where each word was put, and whether the aligner did it):
+// "Duality words log.txt", to look at when the words are not where they are sung
+void DocumentController::writeLog (const std::string& id, const String& note, const std::vector<DualityWords::Word>& words)
+{
+    auto f = DualityWords::modelFile().getSiblingFile ("Duality words log.txt");
+    if (f.getSize() > 2 * 1024 * 1024) f.deleteFile();
+    String s;
+    s << "---- " << Time::getCurrentTime().toString (true, true) << "  recording " << String (id.c_str()).substring (0, 40)
+      << "  " << note << "  build " ARTIFACTS_BUILD "\n";
+    for (auto& w : words) s << String (w.t0, 2) << "\t" << String (w.t1, 2) << "\t" << String (w.confidence, 2) << "\t" << w.text << "\n";
+    f.appendText (s);
 }
 
 void DocumentController::selectWords (ARAAudioSource* src, int first, int last, double from, double to)
