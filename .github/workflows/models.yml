@@ -1,0 +1,23 @@
+# The listening models, fetched for local checks (not shipped from here: the plug-in fetches what it needs itself)
+name: Fetch models
+on:
+  workflow_dispatch:
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download
+        run: |
+          mkdir -p models
+          HF=https://huggingface.co
+          curl -sSfL -o models/ggml-small.en-q5_1.bin $HF/ggerganov/whisper.cpp/resolve/main/ggml-small.en-q5_1.bin
+          curl -sSfL -o models/w2v-model_quantized.onnx $HF/Xenova/wav2vec2-base-960h/resolve/main/onnx/model_quantized.onnx
+          curl -sSfL -o models/w2v-model.onnx $HF/Xenova/wav2vec2-base-960h/resolve/main/onnx/model.onnx
+          curl -sSfL -o models/w2v-vocab.json $HF/Xenova/wav2vec2-base-960h/resolve/main/vocab.json
+          curl -sSfL -o models/w2v-config.json $HF/Xenova/wav2vec2-base-960h/resolve/main/config.json
+          ls -la models
+      - uses: actions/upload-artifact@v4
+        with:
+          name: models
+          path: models
+          retention-days: 3
