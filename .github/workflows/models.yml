@@ -19,21 +19,20 @@ jobs:
           curl -sSfL -o models/w2v-model.onnx $HF/Xenova/wav2vec2-base-960h/resolve/main/onnx/model.onnx
           curl -sSfL -o models/w2v-vocab.json $HF/Xenova/wav2vec2-base-960h/resolve/main/vocab.json
           curl -sSfL -o models/w2v-config.json $HF/Xenova/wav2vec2-base-960h/resolve/main/config.json
-          # ONNX Runtime (MIT), for the word aligner: the plug-in loads it the first time it lines words up
-          V=1.20.1; GH=https://github.com/microsoft/onnxruntime/releases/download/v$V
-          gh release view v$V -R microsoft/onnxruntime --json assets --jq '.assets[].name' | grep -E "osx|win-x64-[0-9]|linux-x64-[0-9]" || true
-          # the Mac library for both kinds of Mac in one file
-          for A in arm64 x86_64; do curl -sSfL -o ort-$A.tgz $GH/onnxruntime-osx-$A-$V.tgz && tar xzf ort-$A.tgz; done
-          lipo -create onnxruntime-osx-arm64-$V/lib/libonnxruntime.$V.dylib onnxruntime-osx-x86_64-$V/lib/libonnxruntime.$V.dylib \
+          # ONNX Runtime (MIT), for the word aligner: the plug-in loads it the first time it lines words up.
+          # From its NuGet package, which carries every platform's library and the C header
+          V=1.20.1
+          curl -sSfL -o ort.nupkg https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime/$V/microsoft.ml.onnxruntime.$V.nupkg
+          mkdir ort && cd ort && unzip -q ../ort.nupkg && cd ..
+          find ort/runtimes -name "*onnxruntime*" | head -20
+          lipo -create ort/runtimes/osx-arm64/native/libonnxruntime.dylib ort/runtimes/osx-x64/native/libonnxruntime.dylib \
                -output models/libonnxruntime.dylib
           install_name_tool -id @rpath/libonnxruntime.dylib models/libonnxruntime.dylib
           codesign --force -s - models/libonnxruntime.dylib
           lipo -info models/libonnxruntime.dylib
-          cp onnxruntime-osx-arm64-$V/include/onnxruntime_c_api.h models/
-          curl -sSfL -o ort-win.zip $GH/onnxruntime-win-x64-$V.zip && unzip -q ort-win.zip
-          cp onnxruntime-win-x64-$V/lib/onnxruntime.dll models/onnxruntime.dll
-          curl -sSfL -o ort-linux.tgz $GH/onnxruntime-linux-x64-$V.tgz && tar xzf ort-linux.tgz
-          cp onnxruntime-linux-x64-$V/lib/libonnxruntime.so.$V models/libonnxruntime-linux.so
+          cp ort/build/native/include/onnxruntime_c_api.h models/
+          cp ort/runtimes/win-x64/native/onnxruntime.dll models/onnxruntime.dll
+          cp ort/runtimes/linux-x64/native/libonnxruntime.so models/libonnxruntime-linux.so
           ls -la models
       - name: Keep them on a release of their own (models; MIT / Apache-2.0 licensed)
         env:
