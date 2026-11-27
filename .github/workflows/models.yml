@@ -9,6 +9,8 @@ jobs:
     runs-on: macos-latest   # (to sign the Mac library)
     steps:
       - name: Download
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           mkdir -p models
           HF=https://huggingface.co
@@ -19,10 +21,15 @@ jobs:
           curl -sSfL -o models/w2v-config.json $HF/Xenova/wav2vec2-base-960h/resolve/main/config.json
           # ONNX Runtime (MIT), for the word aligner: the plug-in loads it the first time it lines words up
           V=1.20.1; GH=https://github.com/microsoft/onnxruntime/releases/download/v$V
-          curl -sSfL -o ort-mac.tgz $GH/onnxruntime-osx-universal2-$V.tgz && tar xzf ort-mac.tgz
-          cp onnxruntime-osx-universal2-$V/lib/libonnxruntime.$V.dylib models/libonnxruntime.dylib
+          gh release view v$V -R microsoft/onnxruntime --json assets --jq '.assets[].name' | grep -E "osx|win-x64-[0-9]|linux-x64-[0-9]" || true
+          # the Mac library for both kinds of Mac in one file
+          for A in arm64 x86_64; do curl -sSfL -o ort-$A.tgz $GH/onnxruntime-osx-$A-$V.tgz && tar xzf ort-$A.tgz; done
+          lipo -create onnxruntime-osx-arm64-$V/lib/libonnxruntime.$V.dylib onnxruntime-osx-x86_64-$V/lib/libonnxruntime.$V.dylib \
+               -output models/libonnxruntime.dylib
+          install_name_tool -id @rpath/libonnxruntime.dylib models/libonnxruntime.dylib
           codesign --force -s - models/libonnxruntime.dylib
-          cp onnxruntime-osx-universal2-$V/include/onnxruntime_c_api.h models/
+          lipo -info models/libonnxruntime.dylib
+          cp onnxruntime-osx-arm64-$V/include/onnxruntime_c_api.h models/
           curl -sSfL -o ort-win.zip $GH/onnxruntime-win-x64-$V.zip && unzip -q ort-win.zip
           cp onnxruntime-win-x64-$V/lib/onnxruntime.dll models/onnxruntime.dll
           curl -sSfL -o ort-linux.tgz $GH/onnxruntime-linux-x64-$V.tgz && tar xzf ort-linux.tgz
