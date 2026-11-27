@@ -6,7 +6,7 @@ permissions:
   contents: write
 jobs:
   fetch:
-    runs-on: ubuntu-latest
+    runs-on: macos-latest   # (to sign the Mac library)
     steps:
       - name: Download
         run: |
@@ -17,6 +17,16 @@ jobs:
           curl -sSfL -o models/w2v-model.onnx $HF/Xenova/wav2vec2-base-960h/resolve/main/onnx/model.onnx
           curl -sSfL -o models/w2v-vocab.json $HF/Xenova/wav2vec2-base-960h/resolve/main/vocab.json
           curl -sSfL -o models/w2v-config.json $HF/Xenova/wav2vec2-base-960h/resolve/main/config.json
+          # ONNX Runtime (MIT), for the word aligner: the plug-in loads it the first time it lines words up
+          V=1.20.1; GH=https://github.com/microsoft/onnxruntime/releases/download/v$V
+          curl -sSfL -o ort-mac.tgz $GH/onnxruntime-osx-universal2-$V.tgz && tar xzf ort-mac.tgz
+          cp onnxruntime-osx-universal2-$V/lib/libonnxruntime.$V.dylib models/libonnxruntime.dylib
+          codesign --force -s - models/libonnxruntime.dylib
+          cp onnxruntime-osx-universal2-$V/include/onnxruntime_c_api.h models/
+          curl -sSfL -o ort-win.zip $GH/onnxruntime-win-x64-$V.zip && unzip -q ort-win.zip
+          cp onnxruntime-win-x64-$V/lib/onnxruntime.dll models/onnxruntime.dll
+          curl -sSfL -o ort-linux.tgz $GH/onnxruntime-linux-x64-$V.tgz && tar xzf ort-linux.tgz
+          cp onnxruntime-linux-x64-$V/lib/libonnxruntime.so.$V models/libonnxruntime-linux.so
           ls -la models
       - name: Keep them on a release of their own (models; MIT / Apache-2.0 licensed)
         env:
@@ -24,5 +34,5 @@ jobs:
         run: |
           gh release view models -R ${{ github.repository }} >/dev/null 2>&1 || \
             gh release create models -R ${{ github.repository }} --prerelease --title "Listening models" \
-              --notes "Whisper small.en (MIT, ggml from whisper.cpp) and wav2vec2-base-960h (Apache-2.0, ONNX). For checks."
+              --notes "Whisper small.en (MIT, ggml from whisper.cpp), wav2vec2-base-960h (Apache-2.0, ONNX) and ONNX Runtime 1.20.1 (MIT)."
           gh release upload models models/* -R ${{ github.repository }} --clobber
