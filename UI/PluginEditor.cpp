@@ -1263,12 +1263,21 @@ namespace
 
             if (const int nl = stepLabels[i].size(); nl >= 2)
             {
-                g.setFont (KintsugiFonts::serif (9.5f).withExtraKerningFactor (0.06f));
+                g.setFont (KintsugiFonts::serif (nl >= 4 ? 8.5f : 9.5f).withExtraKerningFactor (0.06f));
                 for (int e = 0; e < nl; ++e)
                 {
                     const float a = rp.startAngleRadians + (float) e / (float) (nl - 1) * (rp.endAngleRadians - rp.startAngleRadians);
-                    const auto pt = c.getPointOnCircumference (R + 19.0f, a);
-                    g.drawFittedText (stepLabels[i][e], Rectangle<float> (58, 13).withCentre (pt).toNearestInt(), Justification::centred, 1, 0.7f);
+                    if (nl < 4)
+                    {
+                        const auto pt = c.getPointOnCircumference (R + 19.0f, a);
+                        g.drawFittedText (stepLabels[i][e], Rectangle<float> (58, 13).withCentre (pt).toNearestInt(), Justification::centred, 1, 0.7f);
+                        continue;
+                    }
+                    // (four or more: each label reads away from the knob from its tick, so neighbours never overlap)
+                    const auto pt = c.getPointOnCircumference (R + 14.0f, a);
+                    const bool left = pt.x < c.x - 1.0f;
+                    const Rectangle<float> box (left ? pt.x - 70.0f : pt.x, pt.y - 6.5f, 70.0f, 13.0f);
+                    g.drawFittedText (stepLabels[i][e], box.toNearestInt(), left ? Justification::centredRight : Justification::centredLeft, 1, 0.8f);
                 }
             }
 
@@ -2131,7 +2140,7 @@ WordsWindow::WordsWindow()
               { "into", 1.86f, 2.16f, "" }, { "the", 2.20f, 2.36f, "" }, { "quiet", 2.42f, 3.50f, "HARMONY +3RD" },
               { "hold", 4.10f, 4.52f, "DOUBLE" }, { "on", 4.56f, 4.80f, "DOUBLE" }, { "to", 4.86f, 5.02f, "" },
               { "me", 5.06f, 5.70f, "ECHO 1/8" }, { "I'm", 5.98f, 6.24f, "" }, { "almost", 6.30f, 6.86f, "" },
-              { "home", 6.96f, 8.05f, juce::String::fromUTF8 ("HARMONY \xc2\xb7 THROW \xc2\xb7 ECHO"), true } };
+              { "home", 6.96f, 8.05f, juce::String::fromUTF8 ("HARMONY \xc2\xb7 BLOOM \xc2\xb7 ECHO"), true } };
 }
 
 // the live view: the vocal event's own waveform, ten seconds of it at a time, the song's place a third of the way in
@@ -2180,6 +2189,11 @@ void WordsWindow::paintLive (juce::Graphics& g)
         g.setColour (ink.withAlpha (0.35f));
         g.setFont (KintsugiFonts::serif (7.5f, false));
         g.drawText ("BUILD " ARTIFACTS_BUILD, Rectangle<float> (x0 + w - 120.0f, r.getBottom() - 12.0f, 120.0f, 10.0f), Justification::centredRight);
+        if (knobsFor.isNotEmpty())
+        {
+            g.setColour (ink.withAlpha (0.6f));
+            g.drawText (knobsFor, Rectangle<float> (x0, r.getBottom() - 12.0f, w - 130.0f, 10.0f), Justification::centredLeft);
+        }
     }
    #endif
     if (view.progress >= 0.0f)   // how far the listening has come, along the header's rule
@@ -2234,7 +2248,7 @@ void WordsWindow::paintLive (juce::Graphics& g)
                 String tag;
                 if (wd.effects & 1)
                 {
-                    tag << "THROW";
+                    tag << "BLOOM";
                     const double thrSec = wd.throwSet[0] > 0.5f ? 12.0 : (wd.throwSet[1] > 0.0f ? (double) wd.throwSet[1] : view.throwSeconds);
                     const float e1 = xAt (wd.t1 + jmin (3.0, thrSec * 0.5));
                     Path p; p.startNewSubPath (b, cy - maxA * 0.8f); p.quadraticTo (b + (e1 - b) * 0.3f, cy - maxA * 0.2f, e1, cy);
@@ -2713,7 +2727,7 @@ void WordsWindow::paint (juce::Graphics& g)
             g.setGradientFill (ColourGradient (oxblood.withAlpha (0.0f), s0, cy, oxblood.withAlpha (0.28f), a, cy, false));
             g.fillPath (p);
         }
-        if (wd.tag.contains ("THROW"))
+        if (wd.tag.contains ("BLOOM"))
         {
             Path p; const float e1 = jmin (x0 + w, b + (x0 + w - b));
             p.startNewSubPath (b - 6.0f, cy - maxA * 0.85f); p.quadraticTo (b + (e1 - b) * 0.35f, cy - maxA * 0.25f, e1, cy);
@@ -2855,7 +2869,7 @@ void ApplyKeys::paint (juce::Graphics& g)
     g.drawText ("FOCUS", Rectangle<float> (0.0f, 14.0f, (float) getWidth(), 22.0f), Justification::centred);
     g.setColour (brassDeep.withAlpha (0.75f));
     g.fillRect (14.0f, 40.0f, (float) getWidth() - 28.0f, 0.9f);
-    const char* labels[6] = { "THROW", "ECHO", "SWELL", "DOUBLE", "HARMONY", "SHIFT" };
+    const char* labels[6] = { "BLOOM", "ECHO", "SWELL", "DOUBLE", "HARMONY", "SHIFT" };
     for (int k = 0; k < 6; ++k)
     {
         const auto r = keyBounds (k);
@@ -4012,7 +4026,20 @@ std::vector<float> ArtifactsEditor::wordsKnobValues (int effect) const
 void ArtifactsEditor::syncWordSettings()
 {
     using namespace DualityParams;
-    if (mockVariant != 3 || ! wordsWindow.live || (wordsPage != throwFx && wordsPage != echoFx)) { wordsKnobKey.clear(); return; }
+    if (mockVariant != 3 || ! wordsWindow.live || (wordsPage != throwFx && wordsPage != echoFx))
+    {
+        wordsKnobKey.clear();
+        if (wordsWindow.knobsFor.isNotEmpty()) { wordsWindow.knobsFor.clear(); wordsWindow.repaint(); }
+        return;
+    }
+    {   // say which words the knobs are setting
+        juce::StringArray names;
+        for (auto& w : wordsWindow.view.words) if (w.selected && (w.effects >> wordsPage & 1)) names.add (w.text.toUpperCase());
+        const juce::String page = wordsPage == echoFx ? "ECHO" : "BLOOM";
+        juce::String t = page + " KNOBS: " + (names.isEmpty() ? juce::String ("THE NEXT WORDS YOU GIVE " + page)
+                                                              : names.size() <= 3 ? names.joinIntoString (", ") : names[0] + " AND " + juce::String (names.size() - 1) + " MORE");
+        if (t != wordsWindow.knobsFor) { wordsWindow.knobsFor = t; wordsWindow.repaint(); }
+    }
     // the selected words that have the effect on this page
     juce::String key; key << wordsPage << ":";
     const WordsView::Word* firstWord = nullptr;
@@ -4050,7 +4077,7 @@ void ArtifactsEditor::syncWordSettings()
 
 juce::String ArtifactsEditor::wordsPageTitle() const
 {
-    static const char* names[] = { "Throw", "Echo", "Swell", "Double", "Harmony", "Shift" };
+    static const char* names[] = { "Bloom", "Echo", "Swell", "Double", "Harmony", "Shift" };
     return juce::String::fromUTF8 ("Words \xc2\xb7 ") + names[juce::jlimit (0, 5, wordsPage)];
 }
 
@@ -4066,7 +4093,7 @@ void ArtifactsEditor::setWordsPage (int k)
     {
         vDrive->name = "Decay"; bias->name = "Pre-delay"; wear->name = "Size"; sag->name = "Tone"; vMix->name = "Amount";
         show (vType, false); show (wear, true);
-        noiseSwitch.setTooltip ("Freeze: the throw's tail hangs on");
+        noiseSwitch.setTooltip ("Freeze: the bloom's tail hangs on");
     }
     else
     {

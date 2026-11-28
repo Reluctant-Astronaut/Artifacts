@@ -89,7 +89,7 @@ File alignerModelFile()
 {
     const auto env = SystemStats::getEnvironmentVariable ("DUALITY_ALIGNER", {});
     if (env.isNotEmpty()) return File (env);
-    return modelFile().getSiblingFile ("w2v-model_quantized.onnx");
+    return modelFile().getSiblingFile ("w2v-model.onnx");   // (full precision: the 8-bit one placed words differently from one run to the next)
 }
 
 File alignerLibraryFile()
@@ -101,16 +101,18 @@ File alignerLibraryFile()
 
 bool alignerPresent()
 {
-    return alignerModelFile().getSize() > 80 * 1024 * 1024 && alignerLibraryFile().getSize() > 5 * 1024 * 1024;
+    return alignerModelFile().getSize() > 300 * 1024 * 1024 && alignerLibraryFile().getSize() > 5 * 1024 * 1024;
 }
 
 bool fetchAligner (std::function<void (float)> progress, const std::atomic<bool>& abort, String& error)
 {
     // the engine (a small part of the wait), then the model
     if (! fetchFile (alignerURL (libraryName()), alignerLibraryFile(), 5 * 1024 * 1024,
-                     [&] (float p) { if (progress) progress (p * 0.25f); }, abort, error, 30000000)) return false;
-    return fetchFile (alignerURL ("w2v-model_quantized.onnx"), alignerModelFile(), 80 * 1024 * 1024,
-                      [&] (float p) { if (progress) progress (0.25f + p * 0.75f); }, abort, error, 95286046);
+                     [&] (float p) { if (progress) progress (p * 0.1f); }, abort, error, 55000000)) return false;
+    if (! fetchFile (alignerURL ("w2v-model.onnx"), alignerModelFile(), 300 * 1024 * 1024,
+                     [&] (float p) { if (progress) progress (0.1f + p * 0.9f); }, abort, error, 377600000)) return false;
+    alignerModelFile().getSiblingFile ("w2v-model_quantized.onnx").deleteFile();   // (the 8-bit one from before)
+    return true;
 }
 
 //==============================================================================

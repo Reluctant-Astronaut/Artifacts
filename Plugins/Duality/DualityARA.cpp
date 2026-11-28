@@ -474,9 +474,16 @@ void DocumentController::setWordSettings (ARAAudioSource* src, int effect, doubl
 {
     std::lock_guard<std::mutex> w (wordsMutex);
     auto& ws = wordsBySource[src->getPersistentID()].words;
-    for (auto& wd : ws)
-        if (wd.selected && wd.t1 > from && wd.t0 < to && (wd.effects >> effect & 1) != 0)
-            putSettings (wd, effect, settings);
+    {
+        int changed = 0; String which;
+        for (auto& wd : ws)
+            if (wd.selected && wd.t1 > from && wd.t0 < to && (wd.effects >> effect & 1) != 0)
+            { putSettings (wd, effect, settings); ++changed; which << wd.text << " "; }
+        // (a line in the log, so a knob that seems to do nothing can be traced)
+        String vals; for (float v : settings) vals << String (v, 3) << " ";
+        DualityWords::modelFile().getSiblingFile ("Duality words log.txt")
+            .appendText ((effect == DualityParams::echoFx ? "echo" : "bloom") + String (" settings -> ") + String (changed) + " words (" + which.trim() + "): " + vals + "\n");
+    }
     publishMarks (src->getPersistentID());
 }
 

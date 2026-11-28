@@ -126,6 +126,7 @@ public:
     void setView (WordsView v);
     // what the window asks of the words (select, correct, transcribe again, place the lyrics, move the song)
     std::function<void (const WordsAction&)> onAction;
+    juce::String knobsFor;   // which words the Words knobs are setting now (shown small, bottom left)
 
     void mouseDown (const juce::MouseEvent&) override;
     void mouseDrag (const juce::MouseEvent&) override;
